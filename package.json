@@ -1,0 +1,21 @@
+{
+  "name": "multiagency-private-ai",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "review": "node review/review.mjs",
+    "verify": "node core/verify.mjs",
+    "test": "node --test \"test/*.test.mjs\"",
+    "check": "for f in core/*.mjs review/*.mjs test/*.mjs; do node --check \"$f\" || exit 1; done"
+  },
+  "dependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@phala/dcap-qvl": "0.6.5",
+    "undici": "8.11.2"
+  }
+}

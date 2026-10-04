@@ -1,0 +1,45 @@
+name: Private code review
+description: >-
+  Reviews a pull request with a model inside a NEAR AI Cloud enclave, end-to-end
+  encrypted, and posts the review with proof of where the code was read.
+inputs:
+  nearai-api-key:
+    description: NEAR AI Cloud API key.
+    required: true
+  github-token:
+    description: Token that reads the pull request and posts the review.
+    default: ${{ github.token }}
+  pr:
+    description: Pull request number.
+    default: ${{ github.event.pull_request.number || github.event.issue.number }}
+  rubric:
+    description: Comma-separated review instruction files, read from the base commit. Missing files are skipped.
+    default: REVIEW.md,AGENTS.md
+  model:
+    description: A NEAR AI Cloud model that runs in an enclave on NEAR's own fleet.
+    default: z-ai/glm-5.3-flash
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: 22
+
+    - shell: bash
+      run: npm ci --omit=dev --no-audit --no-fund --prefix "$GITHUB_ACTION_PATH/.."
+
+    - shell: bash
+      env:
+        NEARAI_API_KEY: ${{ inputs.nearai-api-key }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ inputs.pr }}
+        RUBRIC: ${{ inputs.rubric }}
+        MODEL: ${{ inputs.model }}
+      run: node "$GITHUB_ACTION_PATH/review.mjs" --receipt "$RUNNER_TEMP/private-review-receipt.json"
+
+    - if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: private-review-receipt
+        path: ${{ runner.temp }}/private-review-receipt.json
+        if-no-files-found: ignore
