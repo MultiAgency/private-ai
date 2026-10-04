@@ -6,8 +6,8 @@
 import { session } from "./e2ee.mjs";
 import { checkSignature, sha256, signedText } from "./sign.mjs";
 
-// Each reply is signed only once complete, so one long reply holds up the
-// whole turn: at about 35 tokens a second, 16k tokens is some eight minutes.
+// The most one reply may produce, reasoning included: at about 35 tokens a
+// second, 16k tokens is some eight minutes of streaming.
 export const MAX_REPLY_TOKENS = 16_384;
 // At the default effort a reasoning model can think until the server's 8k
 // budget runs out, minutes per turn; "low" kept answers right in testing at a
@@ -38,30 +38,28 @@ export async function runAgent({ client, model, publicKey, system, prompt, tools
 
   for (let turn = 1; turn <= maxTurns; turn++) {
     const started = Date.now();
-    const { request, response, json } = await client.chat(e2ee.headers, {
+    const { request, response, events } = await client.chat(e2ee.headers, {
       model,
       ...e2ee.encryptRequest({ messages, tools: definitions }),
       max_tokens: MAX_REPLY_TOKENS,
       reasoning_effort: REASONING_EFFORT,
-      stream: false,
     });
-    const record = { id: json.id, request_sha256: sha256(request), response_sha256: sha256(response) };
-    record.signature = await client.signature(json.id, model);
+    const { id, message: reply, finishReason, usage } = e2ee.decryptStream(events);
+    const record = { id, request_sha256: sha256(request), response_sha256: sha256(response) };
+    record.signature = await client.signature(id, model);
     checkSignature(record.signature, signedText(model, record.request_sha256, record.response_sha256), publicKey);
     turns.push(record);
 
-    const [choice] = json.choices;
-    const reply = e2ee.decryptMessage(choice.message);
     const calls = reply.tool_calls ?? [];
-    log(`turn ${turn}: ${((Date.now() - started) / 1000).toFixed(0)}s, ${json.usage?.prompt_tokens} in, ` +
-      `${json.usage?.completion_tokens} out (${json.usage?.reasoning_tokens ?? 0} reasoning), ` +
-      `${calls.length} tool calls, ${choice.finish_reason}`);
+    log(`turn ${turn}: ${((Date.now() - started) / 1000).toFixed(0)}s, ${usage?.prompt_tokens} in, ` +
+      `${usage?.completion_tokens} out (${usage?.completion_tokens_details?.reasoning_tokens ?? usage?.reasoning_tokens ?? 0} reasoning), ` +
+      `${calls.length} tool calls, ${finishReason}`);
     // A reply cut off at the cap may hold half a tool call: drop it and ask again.
-    if (choice.finish_reason === "length") {
+    if (finishReason === "length") {
       messages.push({ role: "user", content: `Your last reply passed ${MAX_REPLY_TOKENS} tokens and was cut off. Think more briefly, then continue.` });
       continue;
     }
-    messages.push({ role: "assistant", content: reply.content ?? null, ...(calls.length && { tool_calls: calls }) });
+    messages.push({ role: "assistant", content: reply.content || null, ...(calls.length && { tool_calls: calls }) });
     if (calls.length === 0) {
       messages.push({ role: "user", content: `Call ${finishName} to finish.` });
       continue;

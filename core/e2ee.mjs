@@ -62,6 +62,37 @@ export function session(modelPublicKeyHex) {
       };
     },
 
+    /**
+     * The reply a stream carries. Each fragment of each field is encrypted on its
+     * own, so fragments are opened before they are joined: text fields by
+     * concatenation, tool calls by their index (id and name come first, the
+     * arguments in pieces after).
+     */
+    decryptStream(events) {
+      const message = { role: "assistant", content: "", reasoning_content: "" };
+      const calls = [];
+      let finishReason = null;
+      let usage = null;
+      for (const event of events) {
+        if (event.usage) usage = event.usage;
+        const [choice] = event.choices ?? [];
+        if (!choice) continue;
+        if (choice.finish_reason) finishReason = choice.finish_reason;
+        const delta = choice.delta ?? {};
+        for (const field of ["content", "reasoning_content", "reasoning", "refusal"]) {
+          if (delta[field]) message[field] = (message[field] ?? "") + decrypt(delta[field]);
+        }
+        for (const part of delta.tool_calls ?? []) {
+          const call = (calls[part.index] ??= { id: "", type: "function", function: { name: "", arguments: "" } });
+          if (part.id) call.id = part.id;
+          if (part.function?.name) call.function.name += decrypt(part.function.name);
+          if (part.function?.arguments) call.function.arguments += decrypt(part.function.arguments);
+        }
+      }
+      if (calls.length) message.tool_calls = calls.filter(Boolean);
+      return { id: events[0]?.id, message, finishReason, usage };
+    },
+
     decryptMessage(message) {
       const plain = { ...message };
       for (const field of ["content", "reasoning_content", "reasoning", "refusal"]) {

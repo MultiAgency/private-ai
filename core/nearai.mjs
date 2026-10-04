@@ -1,13 +1,17 @@
 // NEAR AI Cloud client. It keeps the exact bytes sent and received, which the
 // response signatures cover, so nothing between here and the wire may
-// re-serialize or decompress them.
+// re-serialize or decompress them. Chat replies stream: their headers come at
+// once, however long the model reasons, and the model enclave still signs the
+// exact streamed bytes when the content is end-to-end encrypted.
 import { Agent, fetch } from "undici";
 
 const BASE = "https://cloud-api.near.ai/v1";
-// Replies come back only once complete, after the model has reasoned, which can
-// pass the five minutes Node's built-in fetch waits for response headers.
-const TIMEOUT_MS = 900_000;
-const dispatcher = new Agent({ headersTimeout: TIMEOUT_MS, bodyTimeout: TIMEOUT_MS });
+// A streamed reply sends its headers at once and then bytes as it goes, so the
+// waits that matter are for headers and between bytes; a whole reply may run
+// as long as the model reasons, up to the cap on the request.
+const WAIT_MS = 300_000;
+const TIMEOUT_MS = 1_800_000;
+const dispatcher = new Agent({ headersTimeout: WAIT_MS, bodyTimeout: WAIT_MS });
 
 export function nearai(apiKey) {
   const headers = { authorization: `Bearer ${apiKey}`, "x-no-aliasing": "true" };
@@ -21,7 +25,6 @@ export function nearai(apiKey) {
         headers: { ...headers, ...extraHeaders },
         body,
         dispatcher,
-        // Longer than the slowest capped reply (see MAX_REPLY_TOKENS in agent.mjs).
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
       raw = Buffer.from(await response.arrayBuffer());
@@ -44,15 +47,16 @@ export function nearai(apiKey) {
       return JSON.parse(await send("GET", `/attestation/report?${query}`));
     },
 
+    /** A streamed chat completion: the exact bytes both ways, and the parsed events. */
     async chat(e2eeHeaders, body) {
-      const request = Buffer.from(JSON.stringify(body));
+      const request = Buffer.from(JSON.stringify({ ...body, stream: true }));
       const response = await send(
         "POST",
         "/chat/completions",
         { ...e2eeHeaders, "content-type": "application/json", "accept-encoding": "identity" },
         request,
       );
-      return { request, response, json: JSON.parse(response) };
+      return { request, response, events: parseEvents(response) };
     },
 
     // A signature can lag its response by a moment; retry briefly, then give up.
@@ -71,4 +75,11 @@ export function nearai(apiKey) {
       throw lastError;
     },
   };
+}
+
+/** The server-sent events of a streamed reply, without the closing [DONE]. */
+export function parseEvents(raw) {
+  return raw.toString("utf8").split("\n")
+    .filter(line => line.startsWith("data: ") && line !== "data: [DONE]")
+    .map(line => JSON.parse(line.slice(6)));
 }
