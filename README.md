@@ -77,8 +77,11 @@ the review body. The body ends with what was verified and the receipt's hash.
 The receipt is uploaded as the run's `private-review-receipt` artifact.
 
 Pull requests from forks get no secrets, so they need an `issue_comment`
-trigger that someone with write access starts, as in
+trigger, as in
 [near-agencies](https://github.com/MultiAgency/near-agencies/blob/staging/.github/workflows/private-review.yml).
+A `/review` comment starts a review only from someone with write access to the
+repository: the Action looks up the commenter's role, because each run spends
+the NEAR AI key's credits and posts to the pull request.
 
 To run it locally without posting:
 

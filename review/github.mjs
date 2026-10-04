@@ -7,7 +7,9 @@ export function github(token, repo) {
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(120_000),
     });
-    if (!response.ok) throw new Error(`GitHub ${method} ${path.split("?")[0]}: ${response.status}`);
+    if (!response.ok) {
+      throw Object.assign(new Error(`GitHub ${method} ${path.split("?")[0]}: ${response.status}`), { status: response.status });
+    }
     return response;
   }
 
@@ -30,7 +32,17 @@ export function github(token, repo) {
           accept: "application/vnd.github.raw+json",
         }).then(r => r.text());
       } catch (error) {
-        if (error.message.endsWith(": 404")) return null;
+        if (error.status === 404) return null;
+        throw error;
+      }
+    },
+
+    /** A user's role on the repository: admin, maintain, write, triage, read or none. */
+    async role(login) {
+      try {
+        return (await send("GET", `/collaborators/${encodeURIComponent(login)}/permission`).then(r => r.json())).role_name;
+      } catch (error) {
+        if (error.status === 404) return "none";
         throw error;
       }
     },

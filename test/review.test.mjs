@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { checkSubmission, commentableLines, renderReview, userPrompt } from "../review/review.mjs";
+import { checkSubmission, commentableLines, renderReview, reviewStarter, userPrompt } from "../review/review.mjs";
 
 const files = [{
   filename: "src/add.js",
@@ -62,4 +62,16 @@ test("a submission whose findings miss a field goes back to the model, naming wh
   );
   assert.match(checkSubmission({ summary: "s", findings: [{ ...finding, line: "3" }] }), /^finding 1 needs/);
   assert.match(checkSubmission({ findings: [] }), /needs a summary/);
+});
+
+test("a /review comment starts a run only for someone with write access", async () => {
+  const roles = { owner: "admin", lead: "maintain", dev: "write", helper: "triage", fan: "read", stranger: "none" };
+  const gh = { role: async login => roles[login] };
+  const comment = login => ({ comment: { user: { login } } });
+
+  assert.equal(await reviewStarter(null, gh), null);
+  assert.equal(await reviewStarter({ pull_request: {} }, gh), null);
+  for (const login of ["owner", "lead", "dev"]) assert.equal((await reviewStarter(comment(login), gh)).allowed, true, login);
+  for (const login of ["helper", "fan", "stranger"]) assert.equal((await reviewStarter(comment(login), gh)).allowed, false, login);
+  assert.deepEqual(await reviewStarter(comment("fan"), gh), { login: "fan", role: "read", allowed: false });
 });

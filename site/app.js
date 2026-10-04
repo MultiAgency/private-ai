@@ -27,8 +27,7 @@ function workflow({ forks }) {
         && !github.event.pull_request.draft)
       || (github.event_name == 'issue_comment'
         && github.event.issue.pull_request
-        && startsWith(github.event.comment.body, '/review')
-        && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))` : `
+        && startsWith(github.event.comment.body, '/review'))` : `
     if: \${{ !github.event.pull_request.draft }}`;
   return `name: private-review
 
@@ -49,7 +48,7 @@ jobs:
       pull-requests: write
       issues: write
     steps:
-      - uses: MultiAgency/private-ai/review@${actionRef}${actionRef === "main" ? "" : " # main"}
+      - uses: MultiAgency/private-ai/review@${actionRef}${actionRef === "main" ? "" : ` # ${actionRef.slice(0, 7)}`}
         with:
           nearai-api-key: \${{ secrets.NEARAI_API_KEY }}
 `;

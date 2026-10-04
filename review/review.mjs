@@ -9,9 +9,11 @@
 //               receipt anyone can re-check with verify.mjs
 //
 // Usage: node review.mjs --repo owner/name --pr N [--dry-run [--review path]] [--receipt path]
-// Env: NEARAI_API_KEY, GITHUB_TOKEN; optionally MODEL, RUBRIC, MAX_TURNS.
+// Env: NEARAI_API_KEY, GITHUB_TOKEN; optionally MODEL, RUBRIC, MAX_TURNS. In
+// GitHub Actions a `/review` comment starts a run only for someone who can write
+// to the repository (GITHUB_EVENT_NAME, GITHUB_EVENT_PATH).
 // It logs counts and hashes only: never code, prompts or the model's output.
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -149,6 +151,19 @@ export function renderReview({ review, turns, attestation, model, receiptSha256,
   return { body, comments: inline.map(f => ({ path: f.path, line: f.line, side: "RIGHT", body: `${label(f)} ${f.body}` })) };
 }
 
+// Each run spends the NEAR AI key's credits and posts to the pull request, so a
+// comment starts one only from someone who could push to the repository: the
+// same rule ai-review's action applies. Pull request events need no check.
+const WRITE_ROLES = ["admin", "maintain", "write"];
+
+/** Who started the run and whether they may: null when it wasn't a comment. */
+export async function reviewStarter(event, gh) {
+  if (!event?.comment) return null;
+  const login = event.comment.user.login;
+  const role = await gh.role(login);
+  return { login, role, allowed: WRITE_ROLES.includes(role) };
+}
+
 async function loadRubric(gh, ref, paths) {
   const parts = [];
   for (const path of paths) {
@@ -181,6 +196,15 @@ async function main() {
   const maxTurns = Number(process.env.MAX_TURNS || "30");
   const gh = github(env("GITHUB_TOKEN"), repo);
   const client = nearai(env("NEARAI_API_KEY"));
+
+  const event = process.env.GITHUB_EVENT_NAME === "issue_comment"
+    ? JSON.parse(readFileSync(env("GITHUB_EVENT_PATH"), "utf8"))
+    : null;
+  const starter = await reviewStarter(event, gh);
+  if (starter && !starter.allowed) {
+    console.log(`::notice::Not reviewing: @${starter.login} has the ${starter.role} role, and starting a review with /review needs write access.`);
+    return;
+  }
 
   try {
     const pr = await gh.pull(number);
