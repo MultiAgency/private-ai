@@ -51,6 +51,8 @@ export function github(token, repo) {
       }
     },
 
+    compare: (base, head) => send("GET", `/compare/${base}...${head}`).then(r => r.json()),
+
     tarball: ref => send("GET", `/tarball/${ref}`).then(async r => Buffer.from(await r.arrayBuffer())),
 
     review: (number, body) => send("POST", `/pulls/${number}/reviews`, { body }),

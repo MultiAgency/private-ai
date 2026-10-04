@@ -121,3 +121,15 @@ test("a re-review with only earlier findings says none are new, not that there a
   });
   assert.match(body, /^\*\*Private review\*\* \(no new findings · 1 still open\)/);
 });
+
+test("every review asks for 👍 or 👎 on its findings", () => {
+  const { body } = renderReview({
+    review: { summary: "s", findings: [] },
+    turns: [{}],
+    attestation: { gateway: { tcb: "UpToDate" }, model: { tcb: "UpToDate", composeHash: "c", signer: "5" } },
+    model: "m",
+    receiptSha256: "r",
+    commentable: new Set(),
+  });
+  assert.match(body, /React 👍 or 👎 on it: that is how this reviewer is measured and improved/);
+});

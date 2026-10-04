@@ -3,3 +3,4 @@ node_modules/
 *-receipt.json
 !site/sample-receipt.json
 _site/
+eval/feedback/

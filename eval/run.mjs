@@ -1,5 +1,6 @@
 // Measures the reviewer on pull requests whose bugs are known: each case pins a
-// commit, the description as it stood then, and the bugs as yes/no questions.
+// commit, the description as it stood then, the bugs a review should raise, and
+// the false positives it should not, all as yes/no questions.
 // It runs the same reviewChange the Action runs, several times in parallel,
 // and reports how often each bug was caught. Nothing is posted.
 //
@@ -56,10 +57,10 @@ const runs = await Promise.all(Array.from({ length: Number(values.runs) }, async
       maxTurns: 30,
     });
     const text = [review.summary, ...review.findings.map(f => `${f.path}:${f.line} ${f.pass}, ${f.severity}: ${f.body}`)].join("\n\n");
-    const caught = await judge({ client, model, publicKey, bugs: spec.bugs, text });
+    const caught = await judge({ client, model, publicKey, bugs: { ...spec.bugs, ...spec.falsePositives }, text });
     const seconds = Math.round((Date.now() - started) / 1000);
     console.log(`run ${i}: ${seconds}s, ${turns.length} signed turns, ${review.findings.length} findings, ` +
-      Object.entries(caught).map(([bug, yes]) => `${bug} ${yes ? "CAUGHT" : "missed"}`).join(", "));
+      Object.entries(caught).map(([id, yes]) => id in (spec.bugs ?? {}) ? `${id} ${yes ? "CAUGHT" : "missed"}` : `${id} ${yes ? "RAISED (false positive)" : "not raised"}`).join(", "));
     return { seconds, caught };
   } catch (error) {
     console.log(`run ${i}: failed: ${error.message}`);
@@ -69,5 +70,6 @@ const runs = await Promise.all(Array.from({ length: Number(values.runs) }, async
   }
 }));
 const done = runs.filter(Boolean);
-for (const bug of Object.keys(spec.bugs)) console.log(`${bug}: caught ${done.filter(r => r.caught[bug]).length}/${done.length}`);
+for (const bug of Object.keys(spec.bugs ?? {})) console.log(`${bug}: caught ${done.filter(r => r.caught[bug]).length}/${done.length}`);
+for (const fp of Object.keys(spec.falsePositives ?? {})) console.log(`${fp}: false positive raised ${done.filter(r => r.caught[fp]).length}/${done.length} (want 0)`);
 console.log(`median time ${done.map(r => r.seconds).sort((a, b) => a - b)[Math.floor(done.length / 2)] ?? "-"}s, ${runs.length - done.length} failed`);

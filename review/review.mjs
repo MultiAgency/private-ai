@@ -8,7 +8,9 @@
 //   3. post     one pull request review, ending with what was verified, and a
 //               receipt anyone can re-check with verify.mjs
 //
-// Usage: node review.mjs --repo owner/name --pr N [--dry-run [--review path]] [--receipt path]
+// Usage: node review.mjs --repo owner/name --pr N [--dry-run [--review path] [--head sha]] [--receipt path]
+// --head reviews an earlier commit of the pull request, as it was then, without
+// its earlier findings: the page's sample pins one this way.
 // Env: NEARAI_API_KEY, GITHUB_TOKEN; optionally MODEL, RUBRIC, MAX_TURNS. In
 // GitHub Actions a `/review` comment starts a run only for someone who can write
 // to the repository (see gate.mjs).
@@ -75,6 +77,8 @@ export function checkSubmission({ summary, findings }) {
 const LIMITS = "_An AI second opinion, not a sign-off: it can miss regressions that span files, above all in money and permission paths._";
 
 const CHECKER = "https://multiagency.github.io/private-ai/#check";
+// Reactions on findings become eval cases (eval/collect.mjs).
+const FEEDBACK = "_Was a finding right? React 👍 or 👎 on it: that is how this reviewer is measured and improved._";
 
 const PATCH_LIMIT = 20_000;
 const PROMPT_LIMIT = 300_000;
@@ -175,6 +179,7 @@ export function renderReview({ review, turns, attestation, model, receiptSha256,
     review.summary,
     stillOpen && `${stillOpen === 1 ? "1 earlier finding is" : `${stillOpen} earlier findings are`} still open, and not posted again.`,
     LIMITS,
+    FEEDBACK,
     elsewhere.length && ["**Not on a changed line**", ...elsewhere.map(f => `- \`${f.path}:${f.line}\` ${label(f)} ${f.body}`)].join("\n"),
     `Read only inside an attested NEAR AI enclave, end-to-end encrypted, with every reply signed by it. [Check the receipt](${CHECKER}).`,
     [
@@ -222,6 +227,7 @@ async function main() {
       repo: { type: "string" },
       pr: { type: "string" },
       "dry-run": { type: "boolean" },
+      head: { type: "string" },
       review: { type: "string" },
       receipt: { type: "string" },
     },
@@ -249,11 +255,16 @@ async function main() {
 
   try {
     const pr = await gh.pull(number);
+    if (values.head) {
+      if (!dryRun) throw new Error("--head reviews an earlier commit, so it needs --dry-run");
+      const commits = await gh.compare(pr.base.ref, values.head);
+      Object.assign(pr, { base: { ...pr.base, sha: commits.merge_base_commit.sha }, head: { ...pr.head, sha: values.head }, files: commits.files });
+    }
     const [files, rubric, tarball, earlier] = await Promise.all([
-      gh.files(number),
+      pr.files ?? gh.files(number),
       loadRubric(gh, pr.base.sha, rubricPaths),
       gh.tarball(pr.head.sha),
-      earlierFindings(gh, number),
+      values.head ? [] : earlierFindings(gh, number),
     ]);
     console.log(`#${number}: ${files.length} files changed, ${earlier.length} earlier findings; head ${pr.head.sha}`);
 

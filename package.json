@@ -11,7 +11,7 @@
     "test": "node --test \"test/*.test.mjs\"",
     "check": "for f in core/*.mjs review/*.mjs eval/*.mjs test/*.mjs site/*.js site/*.mjs; do node --check \"$f\" || exit 1; done",
     "site": "node site/build.mjs",
-    "sample": "node review/review.mjs --repo MultiAgency/near-agencies --pr 78 --dry-run --review site/sample-review.json --receipt site/sample-receipt.json && node test/record-evidence.mjs",
+    "sample": "node review/review.mjs --repo MultiAgency/near-agencies --pr 78 --head 5dc83600b2c1dee0d95e2f6221c9d8144d7733c2 --dry-run --review site/sample-review.json --receipt site/sample-receipt.json && node test/record-evidence.mjs",
     "eval": "node eval/run.mjs"
   },
   "dependencies": {

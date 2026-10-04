@@ -5,6 +5,10 @@ import { ask } from "../core/turn.mjs";
 
 const SYSTEM = "You grade code reviews. Answer with exactly one word: YES or NO.";
 
+/** The question to ask about a finding a person reacted to, for either direction. */
+export const question = body =>
+  `Does this code review raise, as a defect, the same issue as the following finding (same root cause, any wording)? Finding: """${body.replace(/"""/g, "'''")}""" Answer NO if the review does not raise this issue.`;
+
 export async function judge({ client, model, publicKey, bugs, text }) {
   const verdicts = await Promise.all(Object.entries(bugs).map(async ([bug, question]) => {
     const { text: answer } = await ask({
