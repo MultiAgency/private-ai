@@ -8,7 +8,7 @@
 //   3. post     one pull request review, ending with what was verified, and a
 //               receipt anyone can re-check with verify.mjs
 //
-// Usage: node review.mjs --repo owner/name --pr N [--dry-run] [--receipt path]
+// Usage: node review.mjs --repo owner/name --pr N [--dry-run [--review path]] [--receipt path]
 // Env: NEARAI_API_KEY, GITHUB_TOKEN; optionally MODEL, RUBRIC, MAX_TURNS.
 // It logs counts and hashes only: never code, prompts or the model's output.
 import { writeFileSync } from "node:fs";
@@ -19,7 +19,7 @@ import { parseArgs } from "node:util";
 import { runAgent } from "../core/agent.mjs";
 import { attest } from "../core/attest.mjs";
 import { nearai } from "../core/nearai.mjs";
-import { receipt } from "../core/receipt.mjs";
+import { provenClaims, receipt } from "../core/receipt.mjs";
 import { github } from "./github.mjs";
 import { definitions, tools, unpack } from "./repo.mjs";
 
@@ -132,7 +132,6 @@ export function renderReview({ review, turns, attestation, model, receiptSha256,
   for (const f of review.findings) counts.set(`${f.pass}, ${f.severity}`, (counts.get(`${f.pass}, ${f.severity}`) ?? 0) + 1);
   const tally = counts.size ? [...counts].map(([k, n]) => `${k}: ${n}`).join(" · ") : "no findings";
 
-  const { gateway, model: enclave } = attestation;
   const body = [
     `**Private review** (${tally})`,
     review.summary,
@@ -140,10 +139,8 @@ export function renderReview({ review, turns, attestation, model, receiptSha256,
     [
       "<details><summary>Verified privately</summary>",
       "",
-      `- **Model:** \`${model}\` in an Intel TDX enclave with NVIDIA confidential GPUs. Quote verified, TCB ${enclave.tcb}; GPUs attested by NVIDIA; compose hash \`${enclave.composeHash}\`.`,
-      `- **Gateway:** quote verified, TCB ${gateway.tcb}. It relayed only end-to-end encrypted content.`,
-      `- **Signed:** ${turns.length} of ${turns.length} responses signed by the model enclave's key \`${enclave.signer}\`, over the exact request and response bytes.`,
-      `- **Receipt:** sha256 \`${receiptSha256}\`${runUrl ? ` in the [run's artifacts](${runUrl})` : ""}. Anyone can [re-check it](https://github.com/MultiAgency/private-ai#verify-a-receipt).`,
+      ...provenClaims({ model, attestation, turns: turns.length }).map(([claim, text]) => `- **${claim}:** ${text}`),
+      `- **Receipt:** sha256 \`${receiptSha256}\`${runUrl ? ` in the [run's artifacts](${runUrl})` : ""}. Anyone can [check it](https://multiagency.github.io/private-ai/#check).`,
       "",
       "</details>",
     ].join("\n"),
@@ -163,7 +160,13 @@ async function loadRubric(gh, ref, paths) {
 
 async function main() {
   const { values } = parseArgs({
-    options: { repo: { type: "string" }, pr: { type: "string" }, "dry-run": { type: "boolean" }, receipt: { type: "string" } },
+    options: {
+      repo: { type: "string" },
+      pr: { type: "string" },
+      "dry-run": { type: "boolean" },
+      review: { type: "string" },
+      receipt: { type: "string" },
+    },
   });
   const env = name => {
     if (!process.env[name]) throw new Error(`${name} is required`);
@@ -225,7 +228,9 @@ async function main() {
       `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
     const posted = renderReview({ review: result.result, turns: result.turns, attestation, model, receiptSha256, runUrl, commentable: commentableLines(files) });
     if (dryRun) {
-      console.log(JSON.stringify(posted, null, 2));
+      // --review keeps what would have been posted, e.g. as the page's sample.
+      if (values.review) writeFileSync(resolve(values.review), `${JSON.stringify(posted, null, 2)}\n`);
+      else console.log(JSON.stringify(posted, null, 2));
       return;
     }
     await gh.review(number, { commit_id: pr.head.sha, event: "COMMENT", ...posted });

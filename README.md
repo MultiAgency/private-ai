@@ -6,7 +6,10 @@ enclave (Intel TDX with NVIDIA confidential GPUs), encrypts everything to that
 enclave's key, and leaves a receipt anyone can re-check.
 
 The first service is **private code review** of pull requests, in
-[`review/`](review/). [`core/`](core/) is what every service shares.
+[`review/`](review/). [`core/`](core/) is what every service shares, and it
+runs in Node and in the browser alike. The page at
+**[multiagency.github.io/private-ai](https://multiagency.github.io/private-ai/)**
+sets a repository up, shows a real review, and checks receipts in the browser.
 
 ## What a run proves
 
@@ -16,7 +19,8 @@ Before any data is sent, a run checks NEAR AI Cloud's attestation report for a f
   status `UpToDate`, debug mode off. The quote binds the enclave's signing key
   and our nonce. Its configuration measurement matches the attested compose
   file, and its event log replays to RTMR3. NVIDIA's attestation service
-  approves its GPUs for the same nonce.
+  approves its GPUs for the same nonce, in a verdict NVIDIA signs. The receipt
+  keeps that verdict.
 - **Gateway enclave:** the same quote checks, except that a pending platform
   patch (`OutOfDate` and the like) is allowed and `Revoked` is not. Under
   end-to-end encryption the gateway relays only ciphertext.
@@ -41,8 +45,9 @@ request and response bytes checks out. If any check fails, the run stops.
 
 ## Private code review
 
-Add a workflow to the repository. It needs a NEAR AI Cloud API key as the
-`NEARAI_API_KEY` secret.
+[The page](https://multiagency.github.io/private-ai/#setup) writes this for a
+repository, pinned to the latest commit. By hand: add a workflow, and a NEAR AI
+Cloud API key as the `NEARAI_API_KEY` secret.
 
 ```yaml
 name: private-review
@@ -84,13 +89,16 @@ GITHUB_TOKEN=… NEARAI_API_KEY=… node review/review.mjs --repo owner/name --p
 
 ## Verify a receipt
 
+Drop it on [the page](https://multiagency.github.io/private-ai/#check), or:
+
 ```sh
 git clone https://github.com/MultiAgency/private-ai && cd private-ai && npm ci
 node core/verify.mjs private-review-receipt.json
 ```
 
-This re-runs the attestation checks on the recorded report, against current
-Intel collateral and NVIDIA's service. It also checks every response
+Both run [`verifyReceipt`](core/receipt.mjs). It re-runs the attestation checks
+on the recorded report against current Intel collateral, and checks NVIDIA's
+recorded verdict against NVIDIA's published keys. It also checks every response
 signature against the attested model key. The receipt holds hashes of the
 encrypted requests and responses, not the bytes, so it carries none of the
 reviewed code.
@@ -98,4 +106,14 @@ reviewed code.
 ## Development
 
 `npm test` runs offline. It uses a real attestation report recorded with its
-Intel collateral, a real signed turn, and a stand-in enclave for the loop.
+Intel collateral and NVIDIA's verdict, a real signed turn, the page's sample
+receipt, and a stand-in enclave for the loop.
+
+`npm run sample` refreshes the page's sample: a dry-run review of
+near-agencies#78 saved as `site/sample-review.json`, its receipt, and the Intel
+collateral and NVIDIA key the tests check that receipt with. It needs
+`GITHUB_TOKEN` and `NEARAI_API_KEY`.
+
+`npm run site` builds the page into `_site/`, with the sample review rendered in. esbuild bundles `site/app.js` with
+the lockfile's packages, so the browser checker loads no code from a CDN. The
+`pages` workflow publishes it on every push to `main`.

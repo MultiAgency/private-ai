@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Private Code Review · MultiAgency</title>
+  <meta name="description" content="AI review of private pull requests, read only inside a verified NEAR AI Cloud enclave, with a receipt anyone can check.">
+  <meta name="theme-color" content="#ffff33">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400..700&family=Geist+Mono:wght@400..600&family=Inter:wght@400..700&display=swap">
+  <link rel="stylesheet" href="style.css">
+  <script>
+    try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
+  </script>
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <a class="brand" href="https://multiagency.ai" aria-label="MultiAgency home">
+        <svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M1 1L79 1L79 109L63 109L63 17L16 17L16 61L54 61L54 77L1 77ZM119 1L195 1L195 109L180 109L180 17L134 17L134 50L135 50L135 51L119 51ZM86 61L171 61L171 77L86 77ZM203 61L255 61L255 135L142 135L142 118L240 118L240 77L203 77ZM119 86L134 86L134 169L119 169ZM1 118L109 118L109 135L16 135L16 176L53 176L53 192L1 192ZM63 143L79 143L79 238L119 238L119 201L134 201L134 254L63 254ZM180 143L195 143L195 238L240 238L240 192L204 192L204 176L255 176L255 254L180 254ZM86 176L172 176L172 177L171 177L171 191L172 191L172 192L86 192Z"/></svg>
+        MultiAgency
+      </a>
+      <nav class="nav" aria-label="Sections">
+        <a href="#setup">Set up</a>
+        <a href="#sample">Sample</a>
+        <a href="#check">Check a receipt</a>
+      </nav>
+      <div class="header-actions">
+        <button type="button" class="button icon" id="theme" aria-label="Toggle dark mode">
+          <svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M233.5 154.5a8 8 0 0 0-8.9-2.1A88 88 0 0 1 103.6 31.4a8 8 0 0 0-10.9-9.6A104 104 0 1 0 235.6 163.4a8 8 0 0 0-2.1-8.9ZM128 216A88 88 0 0 1 84 51.1a104 104 0 0 0 120.9 120.9A88.3 88.3 0 0 1 128 216Z"/></svg>
+        </button>
+        <a class="button" href="https://github.com/MultiAgency/private-ai">Source</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="card hero">
+      <div class="field" aria-hidden="true"></div>
+      <span class="badge">Private · Verifiable · Open source</span>
+      <h1>Private code review</h1>
+      <p class="lede">An AI reviews your private pull requests. Your code is read only inside a hardware enclave that proves what it is, and every review comes with a receipt anyone can check.</p>
+      <div class="actions">
+        <a class="button primary arrow" href="#setup">Set it up</a>
+        <a class="button" href="#sample">See a review</a>
+        <a class="button" href="#check">Check a receipt</a>
+      </div>
+    </div>
+
+    <section aria-labelledby="how">
+      <div class="section-head">
+        <h2 id="how">How it works</h2>
+        <p>Three checks between your code and the model, all on your own GitHub runner.</p>
+      </div>
+      <div class="grid four">
+        <div class="card">
+          <p class="step-label">Step 1</p>
+          <h3>Attest</h3>
+          <p class="muted">Before any code leaves your runner, check NEAR AI Cloud's evidence for a fresh nonce: Intel's signed TDX quote for the model's machine, fully patched, and NVIDIA's signed verdict on its GPUs.</p>
+        </div>
+        <div class="card">
+          <p class="step-label">Step 2</p>
+          <h3>Encrypt</h3>
+          <p class="muted">Encrypt every request, tool calls included, to the key that evidence binds. Only the attested enclave can read your code. The gateway in front of it sees ciphertext.</p>
+        </div>
+        <div class="card">
+          <p class="step-label">Step 3</p>
+          <h3>Sign</h3>
+          <p class="muted">The enclave signs each reply over the exact request and response bytes, and a reply is used only once its signature checks out.</p>
+        </div>
+        <div class="card">
+          <p class="step-label">Step 4</p>
+          <h3>Receipt</h3>
+          <p class="muted">The evidence and signatures form a receipt, saved with the run. It holds hashes, not code, so anyone can check it.</p>
+        </div>
+      </div>
+      <p class="muted">It runs as a GitHub Action on your runner, which already has your code, with your own NEAR AI key. No MultiAgency server sees your code, and <a href="https://github.com/MultiAgency/private-ai">the source is public</a> so you can read exactly what the Action does.</p>
+    </section>
+
+    <section id="setup" aria-labelledby="setup-title">
+      <div class="section-head">
+        <h2 id="setup-title">Set it up</h2>
+        <p>Two minutes per repository. Enter it here, and the steps below fill in.</p>
+      </div>
+      <form class="card fields" onsubmit="return false">
+        <label>Repository <input id="repo" placeholder="owner/name" autocomplete="off" spellcheck="false"></label>
+        <label>Default branch <input id="branch" value="main" autocomplete="off" spellcheck="false"></label>
+        <label class="checkbox"><input type="checkbox" id="forks"><span>Pull requests from forks: let maintainers start a review by commenting <code>/review</code></span></label>
+      </form>
+
+      <ol class="setup">
+        <li class="card">
+          <p class="step-label">Step 1</p>
+          <h3>Get a NEAR AI Cloud API key</h3>
+          <p class="muted">Create one at <a href="https://cloud.near.ai">cloud.near.ai</a> and add credits. Our test reviews cost a few cents each.</p>
+        </li>
+        <li class="card">
+          <p class="step-label">Step 2</p>
+          <h3>Add it as the repository secret <code>NEARAI_API_KEY</code></h3>
+          <div>
+            <div class="row"><a id="secrets-link" class="button arrow" target="_blank" rel="noopener">Open the repository's secrets</a><span class="muted">or run</span></div>
+            <div class="code"><pre id="secret-command"></pre><button type="button" class="button" data-copy="#secret-command">Copy</button></div>
+          </div>
+        </li>
+        <li class="card">
+          <p class="step-label">Step 3</p>
+          <h3>Add the workflow</h3>
+          <div>
+            <div class="row"><a id="create-link" class="button primary arrow" target="_blank" rel="noopener">Create it on GitHub</a><span class="muted">or save this as <code>.github/workflows/private-review.yml</code></span></div>
+            <div class="code"><pre id="workflow"></pre><button type="button" class="button" data-copy="#workflow">Copy</button></div>
+          </div>
+        </li>
+        <li class="card">
+          <p class="step-label">Step 4</p>
+          <h3>Open a pull request</h3>
+          <p class="muted">The review appears as a pull request review in a few minutes, with findings on changed lines as inline comments. It follows your <code>REVIEW.md</code> and <code>AGENTS.md</code> from the base branch when you have them. The receipt is saved as the run's <code>private-review-receipt</code> artifact.</p>
+        </li>
+      </ol>
+    </section>
+
+    <section id="sample" aria-labelledby="sample-title">
+      <div class="section-head">
+        <h2 id="sample-title">A real review</h2>
+        <p>A dry run on <a href="https://github.com/MultiAgency/near-agencies/pull/78">MultiAgency/near-agencies#78</a>, a public pull request, so you can compare it with the code. Its receipt is the sample below.</p>
+      </div>
+      <!-- SAMPLE_REVIEW -->
+    </section>
+
+    <section id="check" aria-labelledby="check-title">
+      <div class="section-head">
+        <h2 id="check-title">Check a receipt</h2>
+        <p>The same checks as <code>node core/verify.mjs</code>, run in your browser: the Intel quotes against Intel's current collateral, NVIDIA's verdict against NVIDIA's published keys, and every response signature.</p>
+      </div>
+      <div class="card">
+        <div class="drop" id="drop">
+          <p>Drop a <code>private-review-receipt.json</code> here, or</p>
+          <div class="actions">
+            <label class="button">Choose a file <input type="file" id="receipt-file" accept=".json,application/json" hidden></label>
+            <button type="button" class="button primary arrow" id="check-sample">Check the sample receipt</button>
+          </div>
+        </div>
+      </div>
+      <div id="check-result" class="card result" hidden aria-live="polite"></div>
+    </section>
+
+    <section aria-labelledby="limits">
+      <div class="section-head">
+        <h2 id="limits">What it doesn't prove</h2>
+        <p>Where the guarantees stop, so you can decide what else to check.</p>
+      </div>
+      <ul class="limits grid two">
+        <li class="card"><h3>What happens on your runner</h3><p class="muted">The Action runs there. Read <a href="https://github.com/MultiAgency/private-ai/tree/main/review">its source</a>, pinned by commit in your workflow.</p></li>
+        <li class="card"><h3>Which model instance answered</h3><p class="muted">Instances share one signing key, so a signature proves that an attested enclave answered, not which one.</p></li>
+        <li class="card"><h3>What NEAR's images do</h3><p class="muted">The receipt records the compose hashes, and NEAR <a href="https://github.com/nearai/cvm-compose-files">publishes the files</a> they measure. Auditing those images is a separate step.</p></li>
+        <li class="card"><h3>That the review is right</h3><p class="muted">The proof covers where your code was read, not the quality of the findings. Treat them as a reviewer's notes.</p></li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container">
+      <span>MultiAgency · built on <a href="https://docs.near.ai/cloud/private-inference">NEAR AI Cloud private inference</a></span>
+      <nav>
+        <a href="https://multiagency.ai">multiagency.ai</a>
+        <a href="https://github.com/MultiAgency/private-ai">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>

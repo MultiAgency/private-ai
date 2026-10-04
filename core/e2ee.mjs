@@ -3,27 +3,25 @@
 // of [ephemeral public key (32)][nonce (24)][ciphertext + tag]. With
 // `X-Encrypt-All-Fields`, tool definitions and tool calls are encrypted too, so
 // the gateway relays nothing readable but roles, ids and token counts.
-import { randomBytes } from "node:crypto";
-
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { ed25519, x25519 } from "@noble/curves/ed25519.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, concatBytes, hexToBytes, randomBytes } from "@noble/hashes/utils.js";
 
 const INFO = new TextEncoder().encode("ed25519_encryption");
 const symmetricKey = shared => hkdf(sha256, shared, undefined, INFO, 32);
-const toHex = bytes => Buffer.from(bytes).toString("hex");
 
 export function seal(plaintext, recipientX25519) {
   const ephemeral = x25519.utils.randomSecretKey();
   const nonce = randomBytes(24);
   const ciphertext = xchacha20poly1305(symmetricKey(x25519.getSharedSecret(ephemeral, recipientX25519)), nonce)
     .encrypt(new TextEncoder().encode(plaintext));
-  return toHex(Buffer.concat([x25519.getPublicKey(ephemeral), nonce, ciphertext]));
+  return bytesToHex(concatBytes(x25519.getPublicKey(ephemeral), nonce, ciphertext));
 }
 
 export function open(hex, secretX25519) {
-  const data = Buffer.from(hex, "hex");
+  const data = hexToBytes(hex);
   const key = symmetricKey(x25519.getSharedSecret(secretX25519, data.subarray(0, 32)));
   return new TextDecoder().decode(xchacha20poly1305(key, data.subarray(32, 56)).decrypt(data.subarray(56)));
 }
@@ -31,7 +29,7 @@ export function open(hex, secretX25519) {
 /** One review's keys: a fresh client key pair, and the model's verified Ed25519 key. */
 export function session(modelPublicKeyHex) {
   const clientSecret = ed25519.utils.randomSecretKey();
-  const modelX25519 = ed25519.utils.toMontgomery(Buffer.from(modelPublicKeyHex, "hex"));
+  const modelX25519 = ed25519.utils.toMontgomery(hexToBytes(modelPublicKeyHex));
   const clientX25519 = ed25519.utils.toMontgomerySecret(clientSecret);
   const encrypt = text => seal(text, modelX25519);
   const decrypt = hex => open(hex, clientX25519);
@@ -39,7 +37,7 @@ export function session(modelPublicKeyHex) {
   return {
     headers: {
       "x-signing-algo": "ed25519",
-      "x-client-pub-key": toHex(ed25519.getPublicKey(clientSecret)),
+      "x-client-pub-key": bytesToHex(ed25519.getPublicKey(clientSecret)),
       "x-model-pub-key": modelPublicKeyHex,
       "x-encryption-version": "2",
       "x-encrypt-all-fields": "true",

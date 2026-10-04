@@ -39,9 +39,10 @@ test("findings on changed lines go inline; the rest, and the proof, go in the bo
   assert.deepEqual(comments, [{ path: "src/add.js", line: 3, side: "RIGHT", body: "**Bugs, Important:** Wrong value." }]);
   assert.match(body, /^\*\*Private review\*\* \(Bugs, Important: 1 · Security, Nit: 1\)/);
   assert.match(body, /- `src\/other.js:9` \*\*Security, Nit:\*\* Unrelated\./);
-  assert.match(body, /2 of 2 responses signed by the model enclave's key `5{64}`/);
-  assert.match(body, /TCB UpToDate; GPUs attested by NVIDIA/);
-  assert.match(body, /Gateway:\*\* quote verified, TCB OutOfDate/);
+  assert.match(body, /- \*\*Model:\*\* `z-ai\/glm-5.3-flash` in an Intel TDX enclave .* TCB UpToDate, debug off; it binds signing key `5{64}`/);
+  assert.match(body, /- \*\*GPUs:\*\* NVIDIA's signed verdict approves them for the same nonce\./);
+  assert.match(body, /- \*\*Gateway:\*\* Quote verified, TCB OutOfDate\./);
+  assert.match(body, /- \*\*Signed:\*\* 2 of 2 responses signed by the model enclave's key/);
 });
 
 test("a diff too large for the prompt is left for the model to read", () => {
