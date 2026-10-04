@@ -12,15 +12,16 @@ const BASE = "https://cloud-api.near.ai/v1";
 const WAIT_MS = 300_000;
 const TIMEOUT_MS = 1_800_000;
 const dispatcher = new Agent({ headersTimeout: WAIT_MS, bodyTimeout: WAIT_MS });
+const CHAT_ATTEMPTS = 2;
 
-export function nearai(apiKey) {
+export function nearai(apiKey, base = BASE) {
   const headers = { authorization: `Bearer ${apiKey}`, "x-no-aliasing": "true" };
 
   async function send(method, path, extraHeaders, body) {
     const started = Date.now();
     let response, raw;
     try {
-      response = await fetch(`${BASE}${path}`, {
+      response = await fetch(`${base}${path}`, {
         method,
         headers: { ...headers, ...extraHeaders },
         body,
@@ -30,13 +31,19 @@ export function nearai(apiKey) {
       raw = Buffer.from(await response.arrayBuffer());
     } catch (error) {
       const cause = error.cause?.code ?? error.cause?.message ?? error.name;
-      throw new Error(`NEAR AI ${method} ${path.split("?")[0]}: ${error.message} (${cause}) after ${Math.round((Date.now() - started) / 1000)}s`);
+      throw Object.assign(
+        new Error(`NEAR AI ${method} ${path.split("?")[0]}: ${error.message} (${cause}) after ${Math.round((Date.now() - started) / 1000)}s`),
+        { retryable: true },
+      );
     }
     if (!response.ok) {
       // Error text names the status and the API's own message; request bodies
       // are ciphertext, so an echo of them reveals nothing.
       const message = (() => { try { return JSON.parse(raw).error?.message; } catch {} })();
-      throw new Error(`NEAR AI ${method} ${path.split("?")[0]}: ${response.status}${message ? ` ${String(message).slice(0, 200)}` : ""}`);
+      throw Object.assign(
+        new Error(`NEAR AI ${method} ${path.split("?")[0]}: ${response.status}${message ? ` ${String(message).slice(0, 200)}` : ""}`),
+        { retryable: [502, 503, 504].includes(response.status) },
+      );
     }
     return raw;
   }
@@ -47,16 +54,24 @@ export function nearai(apiKey) {
       return JSON.parse(await send("GET", `/attestation/report?${query}`));
     },
 
-    /** A streamed chat completion: the exact bytes both ways, and the parsed events. */
+    /**
+     * A streamed chat completion: the exact bytes both ways, and the parsed
+     * events. A dropped connection or a gateway error is retried once: nothing
+     * from a reply is used until its signature checks out, so a retry costs
+     * tokens, never correctness.
+     */
     async chat(e2eeHeaders, body) {
       const request = Buffer.from(JSON.stringify({ ...body, stream: true }));
-      const response = await send(
-        "POST",
-        "/chat/completions",
-        { ...e2eeHeaders, "content-type": "application/json", "accept-encoding": "identity" },
-        request,
-      );
-      return { request, response, events: parseEvents(response) };
+      const headers = { ...e2eeHeaders, "content-type": "application/json", "accept-encoding": "identity" };
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const response = await send("POST", "/chat/completions", headers, request);
+          return { request, response, events: parseEvents(response) };
+        } catch (error) {
+          if (!error.retryable || attempt >= CHAT_ATTEMPTS) throw error;
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+      }
     },
 
     // A signature can lag its response by a moment; retry briefly, then give up.

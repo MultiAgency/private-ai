@@ -31,7 +31,7 @@ export function provenClaims({ model: modelName, attestation: { model, gateway }
   return [
     ["Model", `\`${modelName}\` in an Intel TDX enclave with NVIDIA confidential GPUs. Quote verified, TCB ${model.tcb}, debug off; it binds signing key \`${model.signer}\` and this run's nonce. Compose hash \`${model.composeHash}\`.`],
     ["GPUs", "NVIDIA's signed verdict approves them for the same nonce."],
-    ["Gateway", `Quote verified, TCB ${gateway.tcb}. It relayed only end-to-end encrypted content.`],
+    ["Gateway", `Quote verified, TCB ${gateway.tcb}${gateway.tcb === "UpToDate" ? "" : " (an Intel platform update is pending, which the check allows for the gateway only)"}. It relayed only end-to-end encrypted content.`],
     ["Signed", `${turns} of ${turns} responses signed by the model enclave's key, over the exact request and response bytes.`],
   ];
 }

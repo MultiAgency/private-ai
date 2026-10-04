@@ -13,17 +13,21 @@ export function github(token, repo) {
     return response;
   }
 
+  async function all(path) {
+    const items = [];
+    for (let page = 1; ; page++) {
+      const batch = await send("GET", `${path}?per_page=100&page=${page}`).then(r => r.json());
+      items.push(...batch);
+      if (batch.length < 100) return items;
+    }
+  }
+
   return {
     pull: number => send("GET", `/pulls/${number}`).then(r => r.json()),
 
-    async files(number) {
-      const files = [];
-      for (let page = 1; ; page++) {
-        const batch = await send("GET", `/pulls/${number}/files?per_page=100&page=${page}`).then(r => r.json());
-        files.push(...batch);
-        if (batch.length < 100) return files;
-      }
-    },
+    files: number => all(`/pulls/${number}/files`),
+    reviews: number => all(`/pulls/${number}/reviews`),
+    reviewComments: number => all(`/pulls/${number}/comments`),
 
     /** A file's text at a commit, or null when it does not exist there. */
     async text(path, ref) {

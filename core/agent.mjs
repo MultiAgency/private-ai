@@ -1,17 +1,12 @@
-// A private tool loop on NEAR AI Cloud. Every turn is end-to-end encrypted to
-// the attested model key, and every reply is used only after the model
-// enclave's signature over the exact request and response checks out. The
-// model works through the caller's tools and finishes by calling the finish
-// tool with arguments the caller accepts.
+// A private tool loop on NEAR AI Cloud, one signed turn at a time (turn.mjs).
+// The model works through the caller's tools and finishes by calling the
+// finish tool with arguments the caller accepts.
 import { session } from "./e2ee.mjs";
-import { checkSignature, sha256, signedText } from "./sign.mjs";
+import { MAX_REPLY_TOKENS, signedTurn } from "./turn.mjs";
 
-// The most one reply may produce, reasoning included: at about 35 tokens a
-// second, 16k tokens is some eight minutes of streaming.
-export const MAX_REPLY_TOKENS = 16_384;
 // At the default effort a reasoning model can think until the server's 8k
 // budget runs out, minutes per turn; "low" kept answers right in testing at a
-// fifth of the time, and responses stay signed by the model enclave.
+// fifth of the time.
 const REASONING_EFFORT = "low";
 // With this many turns left, the model is told to finish.
 const WRAP_UP_TURNS = 3;
@@ -38,16 +33,7 @@ export async function runAgent({ client, model, publicKey, system, prompt, tools
 
   for (let turn = 1; turn <= maxTurns; turn++) {
     const started = Date.now();
-    const { request, response, events } = await client.chat(e2ee.headers, {
-      model,
-      ...e2ee.encryptRequest({ messages, tools: definitions }),
-      max_tokens: MAX_REPLY_TOKENS,
-      reasoning_effort: REASONING_EFFORT,
-    });
-    const { id, message: reply, finishReason, usage } = e2ee.decryptStream(events);
-    const record = { id, request_sha256: sha256(request), response_sha256: sha256(response) };
-    record.signature = await client.signature(id, model);
-    checkSignature(record.signature, signedText(model, record.request_sha256, record.response_sha256), publicKey);
+    const { reply, finishReason, usage, record } = await signedTurn({ client, model, publicKey, e2ee, messages, tools: definitions, effort: REASONING_EFFORT });
     turns.push(record);
 
     const calls = reply.tool_calls ?? [];

@@ -46,6 +46,7 @@ const SUBMIT = {
                 pass: { type: "string", description: "The pass, as the review instructions name it." },
                 severity: { type: "string", description: "The severity, as the review instructions name it." },
                 body: { type: "string", description: "The finding: what is wrong, why it matters, and the fix." },
+                earlier: { type: "boolean", description: "True when this is one of your earlier findings, still unaddressed. It is counted, not posted again." },
               },
               required: ["path", "line", "pass", "severity", "body"],
             },
@@ -68,6 +69,12 @@ export function checkSubmission({ summary, findings }) {
     return `finding ${bad + 1} needs path (string), line (integer), pass, severity and body; it has ${Object.keys(findings[bad] ?? {}).join(", ") || "nothing"}`;
   }
 }
+
+// Measured on a real pull request (eval/), a clean result here has missed
+// regressions that span files in money paths. Every review says so.
+const LIMITS = "_An AI second opinion, not a sign-off: it can miss regressions that span files, above all in money and permission paths._";
+
+const CHECKER = "https://multiagency.github.io/private-ai/#check";
 
 const PATCH_LIMIT = 20_000;
 const PROMPT_LIMIT = 300_000;
@@ -97,6 +104,8 @@ export function systemPrompt(rubric) {
 - The diff is below, and it is usually enough. Read other files of the head commit (list_files, read_file, grep) only to check a specific concern, such as a caller of a changed function. Don't survey the repository.
 - Put each finding on the line it concerns: the path from the repository root, and the line number in the new version of the file.
 - Tag each finding with its pass and severity, named as the review instructions name them.
+- Your earlier findings on this pull request, when there are any, are listed after the diff. Submit one that is still unaddressed with "earlier": true, and it is counted rather than posted again. Mark every new finding false or leave the field out.
+- Never conclude that code is correct, safe or free of regressions. The summary says what you checked and what you found; it does not vouch for what you did not find.
 - When you are done, call submit_review exactly once. With no findings, submit an empty list and say so in the summary.
 
 # Review instructions
@@ -104,7 +113,7 @@ export function systemPrompt(rubric) {
 ${rubric}`;
 }
 
-export function userPrompt(pr, files) {
+export function userPrompt(pr, files, earlier = []) {
   let budget = PROMPT_LIMIT;
   const sections = files.map(f => {
     const header = `### ${f.filename} (${f.status}, +${f.additions} −${f.deletions})`;
@@ -122,34 +131,80 @@ ${pr.body || "(none)"}
 
 ## Changed files (${files.length})
 
-${sections.join("\n\n")}`;
+${sections.join("\n\n")}${earlier.length ? `
+
+## Your earlier findings on this pull request
+
+${earlier.map(f => `- \`${f.path}\`: ${f.body}`).join("\n")}` : ""}`;
+}
+
+/**
+ * This reviewer's own earlier inline findings on the pull request, from the
+ * reviews whose body starts as renderReview starts them, so a re-review can
+ * report what is new instead of repeating itself on every push.
+ */
+export async function earlierFindings(gh, number) {
+  const ours = new Set((await gh.reviews(number)).filter(r => r.body?.startsWith("**Private review**")).map(r => r.id));
+  if (ours.size === 0) return [];
+  const seen = new Set();
+  return (await gh.reviewComments(number))
+    .filter(c => ours.has(c.pull_request_review_id))
+    .map(c => ({ path: c.path, body: c.body }))
+    .filter(f => !seen.has(`${f.path}\n${f.body}`) && seen.add(`${f.path}\n${f.body}`));
 }
 
 /** The review GitHub receives: inline comments on changed lines, the rest in the body. */
 export function renderReview({ review, turns, attestation, model, receiptSha256, runUrl, commentable }) {
   const label = f => `**${f.pass}, ${f.severity}:**`;
-  const inline = review.findings.filter(f => commentable.has(`${f.path}:${f.line}`));
-  const elsewhere = review.findings.filter(f => !commentable.has(`${f.path}:${f.line}`));
+  // Findings the reviewer marked as its own earlier ones, still open, are
+  // counted here instead of posted again on every push.
+  const findings = review.findings.filter(f => !f.earlier);
+  const stillOpen = review.findings.length - findings.length;
+  const inline = findings.filter(f => commentable.has(`${f.path}:${f.line}`));
+  const elsewhere = findings.filter(f => !commentable.has(`${f.path}:${f.line}`));
 
   const counts = new Map();
-  for (const f of review.findings) counts.set(`${f.pass}, ${f.severity}`, (counts.get(`${f.pass}, ${f.severity}`) ?? 0) + 1);
-  const tally = counts.size ? [...counts].map(([k, n]) => `${k}: ${n}`).join(" · ") : "no findings";
+  for (const f of findings) counts.set(`${f.pass}, ${f.severity}`, (counts.get(`${f.pass}, ${f.severity}`) ?? 0) + 1);
+  const tally = [
+    counts.size ? [...counts].map(([k, n]) => `${k}: ${n}`).join(" · ") : stillOpen ? "no new findings" : "no findings",
+    stillOpen && `${stillOpen} still open`,
+  ].filter(Boolean).join(" · ");
 
   const body = [
     `**Private review** (${tally})`,
     review.summary,
+    stillOpen && `${stillOpen === 1 ? "1 earlier finding is" : `${stillOpen} earlier findings are`} still open, and not posted again.`,
+    LIMITS,
     elsewhere.length && ["**Not on a changed line**", ...elsewhere.map(f => `- \`${f.path}:${f.line}\` ${label(f)} ${f.body}`)].join("\n"),
+    `Read only inside an attested NEAR AI enclave, end-to-end encrypted, with every reply signed by it. [Check the receipt](${CHECKER}).`,
     [
-      "<details><summary>Verified privately</summary>",
+      "<details><summary>What was verified</summary>",
       "",
       ...provenClaims({ model, attestation, turns: turns.length }).map(([claim, text]) => `- **${claim}:** ${text}`),
-      `- **Receipt:** sha256 \`${receiptSha256}\`${runUrl ? ` in the [run's artifacts](${runUrl})` : ""}. Anyone can [check it](https://multiagency.github.io/private-ai/#check).`,
+      `- **Receipt:** sha256 \`${receiptSha256}\`${runUrl ? ` in the [run's artifacts](${runUrl})` : ""}. Anyone can [check it](${CHECKER}).`,
       "",
       "</details>",
     ].join("\n"),
   ].filter(Boolean).join("\n\n");
 
   return { body, comments: inline.map(f => ({ path: f.path, line: f.line, side: "RIGHT", body: `${label(f)} ${f.body}` })) };
+}
+
+/** Reviews one change: the tool loop over the head commit unpacked at `root`. */
+export async function reviewChange({ client, model, publicKey, pr, files, rubric, root, maxTurns, earlier = [], log = () => {} }) {
+  const { result, turns } = await runAgent({
+    client,
+    model,
+    publicKey,
+    system: systemPrompt(rubric),
+    prompt: userPrompt(pr, files, earlier),
+    tools: definitions,
+    call: tools(root),
+    finish: SUBMIT,
+    maxTurns,
+    log,
+  });
+  return { review: result, turns };
 }
 
 async function loadRubric(gh, ref, paths) {
@@ -194,12 +249,13 @@ async function main() {
 
   try {
     const pr = await gh.pull(number);
-    const [files, rubric, tarball] = await Promise.all([
+    const [files, rubric, tarball, earlier] = await Promise.all([
       gh.files(number),
       loadRubric(gh, pr.base.sha, rubricPaths),
       gh.tarball(pr.head.sha),
+      earlierFindings(gh, number),
     ]);
-    console.log(`#${number}: ${files.length} files changed; head ${pr.head.sha}`);
+    console.log(`#${number}: ${files.length} files changed, ${earlier.length} earlier findings; head ${pr.head.sha}`);
 
     const { evidence, attestation } = await attest(client, model)
       .catch(error => { throw new Error(`attestation failed, so no code was sent: ${error.message}`); });
@@ -208,22 +264,13 @@ async function main() {
     const head = unpack(tarball);
     let result;
     try {
-      result = await runAgent({
-        client,
-        model,
-        publicKey: attestation.model.publicKey,
-        system: systemPrompt(rubric),
-        prompt: userPrompt(pr, files),
-        tools: definitions,
-        call: tools(head.root),
-        finish: SUBMIT,
-        maxTurns,
-        log: console.log,
+      result = await reviewChange({
+        client, model, publicKey: attestation.model.publicKey, pr, files, rubric, root: head.root, maxTurns, earlier, log: console.log,
       });
     } finally {
       head.remove();
     }
-    console.log(`reviewed: ${result.result.findings.length} findings in ${result.turns.length} signed turns`);
+    console.log(`reviewed: ${result.review.findings.length} findings in ${result.turns.length} signed turns`);
 
     const { text, sha256: receiptSha256 } = receipt({
       subject: { pull_request: `${repo}#${number}`, base_sha: pr.base.sha, head_sha: pr.head.sha },
@@ -236,7 +283,7 @@ async function main() {
 
     const runUrl = process.env.GITHUB_RUN_ID &&
       `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
-    const posted = renderReview({ review: result.result, turns: result.turns, attestation, model, receiptSha256, runUrl, commentable: commentableLines(files) });
+    const posted = renderReview({ review: result.review, turns: result.turns, attestation, model, receiptSha256, runUrl, commentable: commentableLines(files) });
     if (dryRun) {
       // --review keeps what would have been posted, e.g. as the page's sample.
       if (values.review) writeFileSync(resolve(values.review), `${JSON.stringify(posted, null, 2)}\n`);
@@ -246,7 +293,7 @@ async function main() {
     await gh.review(number, { commit_id: pr.head.sha, event: "COMMENT", ...posted });
     console.log(`posted: ${posted.comments.length} inline comments`);
   } catch (error) {
-    if (!dryRun) await gh.comment(number, `**Private review stopped:** ${error.message}. Nothing else was posted.`).catch(() => {});
+    if (!dryRun) await gh.comment(number, `**Private review stopped:** ${error.message}. No code was posted anywhere else. Re-run the job to try again; if it keeps stopping, the run's log names the step.`).catch(() => {});
     throw error;
   }
 }

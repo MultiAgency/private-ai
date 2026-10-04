@@ -1,0 +1,13 @@
+{
+  "name": "near-agencies#94 at 34e6db3: volunteer tasks",
+  "repo": "MultiAgency/near-agencies",
+  "pull_request": 94,
+  "base": "ab131b52dcdf4cc3e8339df018051a5445bfc48c",
+  "head": "34e6db3f6defca145671c2e756982d66ffae7ad4",
+  "description": "near-agencies-94.md",
+  "source": "Both bugs were found by Claude's review of this commit and fixed in c88cdd7 and 763b565.",
+  "bugs": {
+    "closeIfPaid": "Does this code review CLAIM, as a defect, that closeIfPaid (lib/payouts.mjs) can close a job as complete when its volunteer tasks have not been delivered (no delivery/handoff check for volunteers), for example through payout.mjs reconcile or the coordinator path without a proposer? Saying closeIfPaid is correct, or only describing it, is NO.",
+    "recordApprovals": "Does this code review CLAIM, as a defect, that in the coordinator sweep the gate job.members.some(m => !m.payout) stays true because volunteer members never get a payout record, so a payout hold (or the continue after it) skips recordApprovals and paid tasks are never recorded as paid? Discussing that gate and concluding it is fine is NO."
+  }
+}

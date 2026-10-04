@@ -74,7 +74,7 @@ neither exists. The model reads the diff, and the head commit through
 read-only tools (list, read, search). It runs nothing, and no path leaves the
 commit. Findings on changed lines become inline comments, and the rest go in
 the review body. The body ends with what was verified and the receipt's hash.
-The receipt is uploaded as the run's `private-review-receipt` artifact.
+The receipt is uploaded as the run's `private-review-receipt.json` artifact, which downloads as that file, ready for the page's checker.
 
 Pull requests from forks get no secrets, so a `/review` comment starts their
 review, from someone with write access to the repository. Put
@@ -107,6 +107,23 @@ recorded verdict against NVIDIA's published keys. It also checks every response
 signature against the attested model key. The receipt holds hashes of the
 encrypted requests and responses, not the bytes, so it carries none of the
 reviewed code.
+
+## How good it is
+
+`npm run eval` runs the reviewer, unchanged, on pull requests whose bugs are known. Each case pins a commit, the description as it stood then, and the bugs as yes/no questions. A judge, the same attested model, asks those questions of each review. It was validated against real findings and real misses, with no errors in two rounds.
+
+The first case is `near-agencies#94` at `34e6db3`. It has two regressions in money paths, both caught by Claude's review of that commit, and both in callers the diff doesn't touch. `z-ai/glm-5.3-flash` catches neither, in any of the configurations tried:
+- standard review, 3 runs;
+- more reasoning effort;
+- the full changed files in the prompt;
+- an invariants prompt;
+- a question-driven deep pass, at about 28 minutes per review.
+
+**Why it misses them:**
+- When asked about the right caller, it finds the first bug every time. Left to choose its own questions, it doesn't ask that one.
+- It traces the second bug correctly, then judges it intended.
+
+**So every review says it is a second opinion, not a sign-off.** New cases and models are measured here before any claim about them changes.
 
 ## Development
 

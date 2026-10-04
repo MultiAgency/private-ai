@@ -116,7 +116,7 @@
         <li class="card">
           <p class="step-label">Step 4</p>
           <h3>Open a pull request</h3>
-          <p class="muted">The review appears as a pull request review in a few minutes, with findings on changed lines as inline comments. It follows your <code>REVIEW.md</code> and <code>AGENTS.md</code> from the base branch when you have them. The receipt is saved as the run's <code>private-review-receipt</code> artifact.</p>
+          <p class="muted">The review appears as a pull request review in a few minutes, with findings on changed lines as inline comments. It follows your <code>REVIEW.md</code> and <code>AGENTS.md</code> from the base branch when you have them. The receipt is saved as the run's <code>private-review-receipt.json</code> artifact, ready to drop into the checker below.</p>
         </li>
       </ol>
     </section>
@@ -155,7 +155,7 @@
         <li class="card"><h3>What happens on your runner</h3><p class="muted">The Action runs there. Read <a href="https://github.com/MultiAgency/private-ai/tree/main/review">its source</a>, pinned by commit in your workflow.</p></li>
         <li class="card"><h3>Which model instance answered</h3><p class="muted">Instances share one signing key, so a signature proves that an attested enclave answered, not which one.</p></li>
         <li class="card"><h3>What NEAR's images do</h3><p class="muted">The receipt records the compose hashes, and NEAR <a href="https://github.com/nearai/cvm-compose-files">publishes the files</a> they measure. Auditing those images is a separate step.</p></li>
-        <li class="card"><h3>That the review is right</h3><p class="muted">The proof covers where your code was read, not the quality of the findings. Treat them as a reviewer's notes.</p></li>
+        <li class="card"><h3>That the review is right</h3><p class="muted">The proof covers where your code was read, not the quality of the findings. Measured on a real pull request, the private model missed two regressions in money paths that span files, which a frontier model caught (<a href="https://github.com/MultiAgency/private-ai#how-good-it-is">the evaluation</a>). Use it as a second reviewer, not as the sign-off on payment or permission code.</p></li>
       </ul>
     </section>
   </main>
