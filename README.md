@@ -43,7 +43,7 @@ request and response bytes checks out. If any check fails, the run stops.
   NEAR publishes the [compose files](https://github.com/nearai/cvm-compose-files)
   they measure. Auditing those images is a separate step.
 
-## Private code review
+## Private Investigator: private code review
 
 [The page](https://multiagency.github.io/private-ai/#setup) writes this for a
 repository, pinned to the latest commit. By hand: add a workflow, and a NEAR AI
@@ -107,6 +107,16 @@ recorded verdict against NVIDIA's published keys. It also checks every response
 signature against the attested model key. The receipt holds hashes of the
 encrypted requests and responses, not the bytes, so it carries none of the
 reviewed code.
+
+## Choosing a model
+
+The `model` input takes any NEAR AI Cloud model that runs in NEAR's own enclaves. Before any code is sent, the review checks the model with the attestation checks above. If it fails, the review stops. To list the models that pass today:
+
+```sh
+NEARAI_API_KEY=… npm run models
+```
+
+A model passes when its machine is fully patched (TCB `UpToDate`). `allow-unpatched-model: "true"` also accepts a model whose Intel platform update is pending, which is the Qwen models today, but never a revoked one. That is a weaker guarantee, so the review and the receipt both state it, and a receipt is re-checked under the policy it records. Models NEAR AI Cloud can't attest, such as those served through third parties, can't be chosen.
 
 ## How good it is
 

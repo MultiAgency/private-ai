@@ -18,6 +18,7 @@ export function receipt({ subject, model, evidence, turns }) {
     nonce: evidence.nonce,
     attestation: evidence.report,
     gpu_token: evidence.gpuToken,
+    policy: { allow_unpatched_model: evidence.allowUnpatchedModel === true },
     turns,
   }, null, 2);
   return { text, sha256: sha256(text) };
@@ -29,7 +30,7 @@ export function receipt({ subject, model, evidence, turns }) {
  */
 export function provenClaims({ model: modelName, attestation: { model, gateway }, turns }) {
   return [
-    ["Model", `\`${modelName}\` in an Intel TDX enclave with NVIDIA confidential GPUs. Quote verified, TCB ${model.tcb}, debug off; it binds signing key \`${model.signer}\` and this run's nonce. Compose hash \`${model.composeHash}\`.`],
+    ["Model", `\`${modelName}\` in an Intel TDX enclave with NVIDIA confidential GPUs. Quote verified, TCB ${model.tcb}${model.tcb === "UpToDate" ? "" : " (an Intel platform update is pending, which this repository's policy allows for the model)"}, debug off; it binds signing key \`${model.signer}\` and this run's nonce. Compose hash \`${model.composeHash}\`.`],
     ["GPUs", "NVIDIA's signed verdict approves them for the same nonce."],
     ["Gateway", `Quote verified, TCB ${gateway.tcb}${gateway.tcb === "UpToDate" ? "" : " (an Intel platform update is pending, which the check allows for the gateway only)"}. It relayed only end-to-end encrypted content.`],
     ["Signed", `${turns} of ${turns} responses signed by the model enclave's key, over the exact request and response bytes.`],
@@ -49,7 +50,13 @@ export async function verifyReceipt(text, options = {}) {
   const receipt = JSON.parse(text);
   if (receipt.version !== RECEIPT_VERSION) throw new Error(`unknown receipt version ${receipt.version}`);
   if (!receipt.gpu_token) throw new Error("no NVIDIA verdict recorded");
-  const { gateway, model } = await verifyAttestation(receipt.attestation, receipt.nonce, { ...options, gpuToken: receipt.gpu_token });
+  // A receipt states the policy it ran under; the only relaxation there is
+  // allows a pending platform update, which provenClaims then states too.
+  const { gateway, model } = await verifyAttestation(receipt.attestation, receipt.nonce, {
+    ...options,
+    gpuToken: receipt.gpu_token,
+    allowUnpatchedModel: receipt.policy?.allow_unpatched_model === true,
+  });
   if (!receipt.turns?.length) throw new Error("no signed turns");
   for (const turn of receipt.turns) {
     checkSignature(turn.signature, signedText(receipt.model, turn.request_sha256, turn.response_sha256), model.publicKey);

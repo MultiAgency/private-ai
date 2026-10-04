@@ -117,3 +117,12 @@ test("no model evidence fails", async () => {
   b.model_attestations = [];
   await assert.rejects(verifyAttestation(b, nonce, options), /no model evidence/);
 });
+
+test("a repository can allow a model whose platform update is pending, never a revoked one", async () => {
+  const stale = async quote => Object.assign(await verifyQuote(quote), { status: "OutOfDate" });
+  const result = await verifyAttestation(body(), nonce, { ...options, verifyQuote: stale, allowUnpatchedModel: true });
+  assert.equal(result.model.tcb, "OutOfDate");
+
+  const revoked = async quote => Object.assign(await verifyQuote(quote), { status: "Revoked" });
+  await assert.rejects(verifyAttestation(body(), nonce, { ...options, verifyQuote: revoked, allowUnpatchedModel: true }), /TCB status Revoked/);
+});

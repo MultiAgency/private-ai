@@ -15,6 +15,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { github } from "../review/github.mjs";
+import { isOurReview } from "../review/review.mjs";
 import { question } from "./judge.mjs";
 
 const { values } = parseArgs({
@@ -45,7 +46,7 @@ const out = resolve(values.out);
 mkdirSync(out, { recursive: true });
 let cases = 0, verdicts = 0;
 for (const pr of pulls) {
-  const ours = new Set((await gh.reviews(pr.number)).filter(r => r.body?.startsWith("**Private review**")).map(r => r.id));
+  const ours = new Set((await gh.reviews(pr.number)).filter(r => isOurReview(r.body)).map(r => r.id));
   if (ours.size === 0) continue;
   const byCommit = new Map();
   for (const c of await gh.reviewComments(pr.number)) {

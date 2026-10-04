@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { checkSubmission, commentableLines, earlierFindings, renderReview, userPrompt } from "../review/review.mjs";
+import { checkSubmission, commentableLines, earlierFindings, mergeFindings, renderReview, userPrompt } from "../review/review.mjs";
 
 const files = [{
   filename: "src/add.js",
@@ -37,7 +37,7 @@ test("findings on changed lines go inline; the rest, and the proof, go in the bo
   });
 
   assert.deepEqual(comments, [{ path: "src/add.js", line: 3, side: "RIGHT", body: "**Bugs, Important:** Wrong value." }]);
-  assert.match(body, /^\*\*Private review\*\* \(Bugs, Important: 1 · Security, Nit: 1\)/);
+  assert.match(body, /^\*\*Private Investigator\*\* \(Bugs, Important: 1 · Security, Nit: 1\)/);
   assert.match(body, /_An AI second opinion, not a sign-off: it can miss regressions that span files/);
   assert.match(body, /Read only inside an attested NEAR AI enclave, end-to-end encrypted, with every reply signed by it\. \[Check the receipt\]\(https:\/\/multiagency\.github\.io\/private-ai\/#check\)\.\n\n<details><summary>What was verified<\/summary>/);
   assert.match(body, /- `src\/other.js:9` \*\*Security, Nit:\*\* Unrelated\./);
@@ -70,20 +70,25 @@ test("a re-review sees only its own earlier findings, once each", async () => {
   const gh = {
     reviews: async () => [
       { id: 1, body: "**Private review** (Bugs, Nit: 1)\n\n..." },
+      { id: 3, body: "**Private Investigator** (no new findings)\n\n..." },
       { id: 2, body: "Review against REVIEW.md: 1 finding" },
     ],
     reviewComments: async () => [
       { pull_request_review_id: 1, path: "a.js", body: "**Bugs, Nit:** amount 0 hides the label" },
       { pull_request_review_id: 1, path: "a.js", body: "**Bugs, Nit:** amount 0 hides the label" },
       { pull_request_review_id: 2, path: "b.js", body: "Bugs, Important: someone else's" },
+      { pull_request_review_id: 3, path: "d.js", body: "**Bugs, Nit:** under the new name" },
       { pull_request_review_id: null, path: "c.js", body: "a person's comment" },
     ],
   };
   const earlier = await earlierFindings(gh, 7);
-  assert.deepEqual(earlier, [{ path: "a.js", body: "**Bugs, Nit:** amount 0 hides the label" }]);
+  assert.deepEqual(earlier, [
+    { path: "a.js", body: "**Bugs, Nit:** amount 0 hides the label" },
+    { path: "d.js", body: "**Bugs, Nit:** under the new name" },
+  ]);
 
   const pr = { number: 7, title: "t", body: "", base: { ref: "staging", sha: "b" }, head: { ref: "f", sha: "h" } };
-  assert.match(userPrompt(pr, files, earlier), /## Your earlier findings on this pull request\n\n- `a\.js`: \*\*Bugs, Nit:\*\* amount 0 hides the label$/);
+  assert.match(userPrompt(pr, files, earlier), /## Your earlier findings on this pull request\n\n- `a\.js`: \*\*Bugs, Nit:\*\* amount 0 hides the label\n- `d\.js`: \*\*Bugs, Nit:\*\* under the new name$/);
   assert.doesNotMatch(userPrompt(pr, files), /earlier findings/);
   assert.deepEqual(await earlierFindings({ reviews: async () => [], reviewComments: async () => assert.fail("not needed") }, 7), []);
 });
@@ -105,7 +110,7 @@ test("findings marked earlier are counted, not posted again", () => {
     commentable: commentableLines(files),
   });
   assert.deepEqual(comments.map(c => c.body), ["**Bugs, Important:** new"]);
-  assert.match(body, /^\*\*Private review\*\* \(Bugs, Important: 1 · 2 still open\)/);
+  assert.match(body, /^\*\*Private Investigator\*\* \(Bugs, Important: 1 · 2 still open\)/);
   assert.match(body, /\n\n2 earlier findings are still open, and not posted again\.\n\n/);
   assert.doesNotMatch(body, /old too/);
 });
@@ -119,7 +124,7 @@ test("a re-review with only earlier findings says none are new, not that there a
     receiptSha256: "r",
     commentable: commentableLines(files),
   });
-  assert.match(body, /^\*\*Private review\*\* \(no new findings · 1 still open\)/);
+  assert.match(body, /^\*\*Private Investigator\*\* \(no new findings · 1 still open\)/);
 });
 
 test("every review asks for 👍 or 👎 on its findings", () => {
@@ -132,4 +137,23 @@ test("every review asks for 👍 or 👎 on its findings", () => {
     commentable: new Set(),
   });
   assert.match(body, /React 👍 or 👎 on it: that is how this reviewer is measured and improved/);
+});
+
+test("passes' findings merge one per line, the first pass's wording kept", () => {
+  const a = { path: "x.js", line: 1, pass: "Bugs", severity: "Nit", body: "first" };
+  const b = { path: "x.js", line: 1, pass: "Bugs", severity: "Important", body: "second" };
+  const c = { path: "x.js", line: 2, pass: "Bugs", severity: "Important", body: "only in pass 2" };
+  assert.deepEqual(mergeFindings([[a], [b, c], []]), [a, c]);
+});
+
+test("a review on a model with a pending platform update says the policy allowed it", () => {
+  const { body } = renderReview({
+    review: { summary: "s", findings: [] },
+    turns: [{}],
+    attestation: { gateway: { tcb: "UpToDate" }, model: { tcb: "OutOfDate", composeHash: "c", signer: "5" } },
+    model: "Qwen/Qwen3.8-27B",
+    receiptSha256: "r",
+    commentable: new Set(),
+  });
+  assert.match(body, /TCB OutOfDate \(an Intel platform update is pending, which this repository's policy allows for the model\)/);
 });

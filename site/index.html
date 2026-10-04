@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Private Code Review · MultiAgency</title>
+  <title>Private Investigator · MultiAgency</title>
   <meta name="description" content="AI review of private pull requests, read only inside a verified NEAR AI Cloud enclave, with a receipt anyone can check.">
   <meta name="theme-color" content="#ffff33">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -40,8 +40,8 @@
   <main class="container">
     <div class="card hero">
       <div class="field" aria-hidden="true"></div>
-      <span class="badge">Private · Verifiable · Open source</span>
-      <h1>Private code review</h1>
+      <span class="badge">Private code review · Verifiable · Open source</span>
+      <h1>Private Investigator</h1>
       <p class="lede">A second AI reviewer for your private pull requests. Your code is read only inside a hardware enclave that proves what it is, and every review comes with a receipt anyone can check.</p>
       <div class="actions">
         <a class="button primary arrow" href="#setup">Set it up</a>
@@ -88,6 +88,9 @@
       <form class="card fields" onsubmit="return false">
         <label>Repository <input id="repo" placeholder="owner/name" autocomplete="off" spellcheck="false"></label>
         <label>Default branch <input id="branch" value="main" autocomplete="off" spellcheck="false"></label>
+        <label class="wide">Model <input id="model" value="z-ai/glm-5.3-flash" autocomplete="off" spellcheck="false"></label>
+        <p class="muted hint">Any NEAR AI Cloud model that passes the checks. Today that is <code>z-ai/glm-5.3-flash</code>; the Qwen models pass only with the option below. <code>npm run models</code> in the <a href="https://github.com/MultiAgency/private-ai">source</a> lists them live. A model that fails stops the review before any code is sent.</p>
+        <label class="checkbox"><input type="checkbox" id="unpatched"><span>Allow a model whose Intel platform update is pending. A weaker guarantee: every review and receipt says so.</span></label>
         <label class="checkbox"><input type="checkbox" id="forks"><span>Pull requests from forks: anyone with write access can start a review by commenting <code>/review</code></span></label>
       </form>
 

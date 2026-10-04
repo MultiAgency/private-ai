@@ -1,4 +1,4 @@
-name: Private code review
+name: Private Investigator
 description: >-
   Reviews a pull request with a model inside a NEAR AI Cloud enclave, end-to-end
   encrypted, and posts the review with proof of where the code was read.
@@ -16,8 +16,16 @@ inputs:
     description: Comma-separated review instruction files, read from the base commit. Missing files are skipped.
     default: REVIEW.md,AGENTS.md
   model:
-    description: A NEAR AI Cloud model that runs in an enclave on NEAR's own fleet.
+    description: >-
+      A NEAR AI Cloud model that runs in an enclave on NEAR's own fleet. The review
+      stops before sending any code unless the model passes the checks; `npm run
+      models` in MultiAgency/private-ai lists the ones that pass today.
     default: z-ai/glm-5.3-flash
+  allow-unpatched-model:
+    description: >-
+      "true" accepts a model whose Intel platform update is pending, a weaker
+      guarantee that every review and receipt states. Never a revoked one.
+    default: "false"
 runs:
   using: composite
   steps:
@@ -35,6 +43,7 @@ runs:
         PR_NUMBER: ${{ inputs.pr }}
         RUBRIC: ${{ inputs.rubric }}
         MODEL: ${{ inputs.model }}
+        ALLOW_UNPATCHED_MODEL: ${{ inputs.allow-unpatched-model }}
       run: node "$GITHUB_ACTION_PATH/review.mjs" --receipt "$RUNNER_TEMP/private-review-receipt.json"
 
     - if: always()

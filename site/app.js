@@ -18,7 +18,18 @@ fetch("https://api.github.com/repos/MultiAgency/private-ai/commits/main", { head
 
 const pinned = path => `MultiAgency/private-ai/${path}@${actionRef}${actionRef === "main" ? "" : ` # ${actionRef.slice(0, 7)}`}`;
 
-const reviewJob = (condition = "") => `
+const DEFAULT_MODEL = "z-ai/glm-5.3-flash";
+
+// The review step's inputs: the key, and the model and policy when they differ
+// from the defaults. A model id is a short path, so anything else is dropped.
+function inputs({ model, unpatched }) {
+  const lines = ["nearai-api-key: \${{ secrets.NEARAI_API_KEY }}"];
+  if (/^[\w.:-]+\/[\w.:-]+$/.test(model) && model !== DEFAULT_MODEL) lines.push(`model: ${model}`);
+  if (unpatched) lines.push('allow-unpatched-model: "true"');
+  return lines.map(line => `\n          ${line}`).join("");
+}
+
+const reviewJob = (options, condition = "") => `
   review:${condition}
     runs-on: ubuntu-latest
     concurrency:
@@ -30,12 +41,11 @@ const reviewJob = (condition = "") => `
       issues: write
     steps:
       - uses: ${pinned("review")}
-        with:
-          nearai-api-key: \${{ secrets.NEARAI_API_KEY }}`;
+        with:${inputs(options)}`;
 
 // With /review, a gate job of its own decides first: a refused comment never
 // starts the review job, so it can't load the key or cancel a review in progress.
-const gatedJobs = () => `
+const gatedJobs = options => `
   gate:
     if: >-
       (github.event_name == 'pull_request'
@@ -53,11 +63,11 @@ const gatedJobs = () => `
     steps:
       - id: gate
         uses: ${pinned("review/gate")}
-${reviewJob(`
+${reviewJob(options, `
     needs: gate
     if: needs.gate.outputs.allowed == 'true'`)}`;
 
-function workflow({ forks }) {
+function workflow({ forks, ...options }) {
   return `name: private-review
 
 # Private AI review: the model reads this pull request only inside a NEAR AI
@@ -68,7 +78,7 @@ on:
   issue_comment:
     types: [created]` : ""}
 
-jobs:${forks ? gatedJobs() : reviewJob(`
+jobs:${forks ? gatedJobs(options) : reviewJob(options, `
     if: \${{ !github.event.pull_request.draft }}`)}
 `;
 }
@@ -78,7 +88,7 @@ function render() {
   const valid = /^[\w.-]+$/.test(owner ?? "") && /^[\w.-]+$/.test(name ?? "");
   const repo = valid ? `${owner}/${name}` : "OWNER/REPO";
   const branch = $("#branch").value.trim() || "main";
-  const yaml = workflow({ forks: $("#forks").checked });
+  const yaml = workflow({ forks: $("#forks").checked, model: $("#model").value.trim() || DEFAULT_MODEL, unpatched: $("#unpatched").checked });
 
   $("#workflow").textContent = yaml;
   $("#secret-command").textContent = `gh secret set NEARAI_API_KEY -R ${repo}`;
@@ -90,7 +100,7 @@ function render() {
   for (const link of [secrets, create]) link.toggleAttribute("aria-disabled", !valid);
 }
 
-for (const id of ["#repo", "#branch", "#forks"]) $(id).addEventListener("input", render);
+for (const id of ["#repo", "#branch", "#forks", "#model", "#unpatched"]) $(id).addEventListener("input", render);
 render();
 
 for (const button of document.querySelectorAll("[data-copy]")) {

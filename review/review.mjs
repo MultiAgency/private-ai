@@ -11,7 +11,9 @@
 // Usage: node review.mjs --repo owner/name --pr N [--dry-run [--review path] [--head sha]] [--receipt path]
 // --head reviews an earlier commit of the pull request, as it was then, without
 // its earlier findings: the page's sample pins one this way.
-// Env: NEARAI_API_KEY, GITHUB_TOKEN; optionally MODEL, RUBRIC, MAX_TURNS. In
+// Env: NEARAI_API_KEY, GITHUB_TOKEN; optionally MODEL, RUBRIC, MAX_TURNS,
+// PASSES, and ALLOW_UNPATCHED_MODEL=true to accept a model whose platform update
+// is pending (stated in the review and the receipt). In
 // GitHub Actions a `/review` comment starts a run only for someone who can write
 // to the repository (see gate.mjs).
 // It logs counts and hashes only: never code, prompts or the model's output.
@@ -142,13 +144,18 @@ ${sections.join("\n\n")}${earlier.length ? `
 ${earlier.map(f => `- \`${f.path}\`: ${f.body}`).join("\n")}` : ""}`;
 }
 
+// The product's name heads every review. Reviews posted before it had a name
+// began "**Private review**", and still count as this reviewer's own.
+export const NAME = "Private Investigator";
+export const isOurReview = body => [`**${NAME}**`, "**Private review**"].some(heading => body?.startsWith(heading));
+
 /**
  * This reviewer's own earlier inline findings on the pull request, from the
  * reviews whose body starts as renderReview starts them, so a re-review can
  * report what is new instead of repeating itself on every push.
  */
 export async function earlierFindings(gh, number) {
-  const ours = new Set((await gh.reviews(number)).filter(r => r.body?.startsWith("**Private review**")).map(r => r.id));
+  const ours = new Set((await gh.reviews(number)).filter(r => isOurReview(r.body)).map(r => r.id));
   if (ours.size === 0) return [];
   const seen = new Set();
   return (await gh.reviewComments(number))
@@ -175,7 +182,7 @@ export function renderReview({ review, turns, attestation, model, receiptSha256,
   ].filter(Boolean).join(" · ");
 
   const body = [
-    `**Private review** (${tally})`,
+    `**${NAME}** (${tally})`,
     review.summary,
     stillOpen && `${stillOpen === 1 ? "1 earlier finding is" : `${stillOpen} earlier findings are`} still open, and not posted again.`,
     LIMITS,
@@ -195,9 +202,13 @@ export function renderReview({ review, turns, attestation, model, receiptSha256,
   return { body, comments: inline.map(f => ({ path: f.path, line: f.line, side: "RIGHT", body: `${label(f)} ${f.body}` })) };
 }
 
-/** Reviews one change: the tool loop over the head commit unpacked at `root`. */
-export async function reviewChange({ client, model, publicKey, pr, files, rubric, root, maxTurns, earlier = [], log = () => {} }) {
-  const { result, turns } = await runAgent({
+/**
+ * Reviews one change: the tool loop over the head commit unpacked at `root`,
+ * `passes` times in parallel. One pass catches a real finding some runs and not
+ * others (eval/), so several passes' findings are merged, one per line.
+ */
+export async function reviewChange({ client, model, publicKey, pr, files, rubric, root, maxTurns, earlier = [], passes = 1, log = () => {} }) {
+  const runs = await Promise.all(Array.from({ length: passes }, (_, i) => runAgent({
     client,
     model,
     publicKey,
@@ -207,9 +218,18 @@ export async function reviewChange({ client, model, publicKey, pr, files, rubric
     call: tools(root),
     finish: SUBMIT,
     maxTurns,
-    log,
-  });
-  return { review: result, turns };
+    log: passes > 1 ? line => log(`pass ${i + 1}: ${line}`) : log,
+  })));
+  return {
+    review: { summary: runs[0].result.summary, findings: mergeFindings(runs.map(run => run.result.findings)) },
+    turns: runs.flatMap(run => run.turns),
+  };
+}
+
+/** Findings from several passes, keeping the first one reported for each line. */
+export function mergeFindings(lists) {
+  const seen = new Set();
+  return lists.flat().filter(f => !seen.has(`${f.path}:${f.line}`) && seen.add(`${f.path}:${f.line}`));
 }
 
 async function loadRubric(gh, ref, paths) {
@@ -243,6 +263,9 @@ async function main() {
   const model = process.env.MODEL || "z-ai/glm-5.3-flash";
   const rubricPaths = (process.env.RUBRIC || "REVIEW.md,AGENTS.md").split(",").map(p => p.trim()).filter(Boolean);
   const maxTurns = Number(process.env.MAX_TURNS || "30");
+  const passes = Number(process.env.PASSES || "1");
+  const allowUnpatchedModel = process.env.ALLOW_UNPATCHED_MODEL === "true";
+  if (!Number.isInteger(passes) || passes < 1 || passes > 5) throw new Error(`PASSES must be 1 to 5, not ${process.env.PASSES}`);
   const gh = github(env("GITHUB_TOKEN"), repo);
   const client = nearai(env("NEARAI_API_KEY"));
 
@@ -268,7 +291,7 @@ async function main() {
     ]);
     console.log(`#${number}: ${files.length} files changed, ${earlier.length} earlier findings; head ${pr.head.sha}`);
 
-    const { evidence, attestation } = await attest(client, model)
+    const { evidence, attestation } = await attest(client, model, { allowUnpatchedModel })
       .catch(error => { throw new Error(`attestation failed, so no code was sent: ${error.message}`); });
     console.log(`attested: model TCB ${attestation.model.tcb}, gateway TCB ${attestation.gateway.tcb}, signer ${attestation.model.signer}`);
 
@@ -276,7 +299,7 @@ async function main() {
     let result;
     try {
       result = await reviewChange({
-        client, model, publicKey: attestation.model.publicKey, pr, files, rubric, root: head.root, maxTurns, earlier, log: console.log,
+        client, model, publicKey: attestation.model.publicKey, pr, files, rubric, root: head.root, maxTurns, earlier, passes, log: console.log,
       });
     } finally {
       head.remove();

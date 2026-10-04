@@ -179,6 +179,8 @@ section { margin-top: 64px; }
   outline: none;
 }
 .fields input:focus-visible { border-color: var(--ring); box-shadow: 0 0 0 1px color-mix(in oklab, var(--ring) 50%, transparent); }
+.fields .wide { grid-column: 1 / -1; }
+.fields .hint { grid-column: 1 / -1; margin: -4px 0 0; font-size: 12px; }
 .fields .checkbox { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; font-weight: 400; }
 .fields input[type="checkbox"] { accent-color: var(--primary); width: 14px; height: 14px; margin: 0; }
 

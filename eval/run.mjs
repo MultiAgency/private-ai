@@ -4,7 +4,7 @@
 // It runs the same reviewChange the Action runs, several times in parallel,
 // and reports how often each bug was caught. Nothing is posted.
 //
-// Usage: node eval/run.mjs [--case eval/cases/x.json] [--runs 4]
+// Usage: node eval/run.mjs [--case eval/cases/x.json] [--runs 4] [--passes 1]
 // Env: NEARAI_API_KEY, GITHUB_TOKEN.
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -21,6 +21,7 @@ const { values } = parseArgs({
   options: {
     case: { type: "string", default: "eval/cases/near-agencies-94.json" },
     runs: { type: "string", default: "4" },
+    passes: { type: "string", default: "1" },
   },
 });
 const casePath = resolve(values.case);
@@ -47,14 +48,14 @@ const tarball = await gh.tarball(spec.head);
 const { attestation } = await attest(client, model);
 const publicKey = attestation.model.publicKey;
 
-console.log(`${spec.name}: ${values.runs} runs`);
+console.log(`${spec.name}: ${values.runs} runs of ${values.passes} pass${values.passes === "1" ? "" : "es"}`);
 const runs = await Promise.all(Array.from({ length: Number(values.runs) }, async (_, i) => {
   const head = unpack(tarball);
   const started = Date.now();
   try {
     const { review, turns } = await reviewChange({
       client, model, publicKey, pr, files: compare.files, rubric, root: head.root,
-      maxTurns: 30,
+      maxTurns: 30, passes: Number(values.passes),
     });
     const text = [review.summary, ...review.findings.map(f => `${f.path}:${f.line} ${f.pass}, ${f.severity}: ${f.body}`)].join("\n\n");
     const caught = await judge({ client, model, publicKey, bugs: { ...spec.bugs, ...spec.falsePositives }, text });

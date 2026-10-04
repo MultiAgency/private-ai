@@ -28,3 +28,11 @@ test("an edited turn, signer or verdict fails", async () => {
   await assert.rejects(edit(r => { r.nonce = "00".repeat(32); }), /report data does not bind/);
   await assert.rejects(edit(r => { r.turns = []; }), /no signed turns/);
 });
+
+test("a receipt is checked under the policy it states", async () => {
+  const stale = async quote => Object.assign(await verifyQuote(quote), { status: "OutOfDate" });
+  const withPolicy = allow => JSON.stringify({ ...JSON.parse(text), policy: { allow_unpatched_model: allow } });
+  await assert.rejects(verifyReceipt(withPolicy(false), { ...options, verifyQuote: stale }), /model: TCB status OutOfDate not accepted/);
+  const { model } = await verifyReceipt(withPolicy(true), { ...options, verifyQuote: stale });
+  assert.equal(model.tcb, "OutOfDate");
+});

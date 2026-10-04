@@ -10,10 +10,13 @@ import { equalBytes } from "@noble/curves/utils.js";
 import { sha256, sha384 } from "@noble/hashes/sha2.js";
 import { bytesToHex, concatBytes, hexToBytes, randomBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 
-// The model reads the data, so its platform must be fully patched.
+// The model reads the data, so its platform must be fully patched, unless the
+// run's policy opts in to a pending update (allowUnpatchedModel), which every
+// review and receipt then states.
 export const MODEL_TCB = ["UpToDate"];
 // Under E2EE the gateway relays ciphertext only. Its quote must still verify and
-// bind our nonce, but a pending platform patch there does not expose data.
+// bind our nonce, but a pending platform patch there does not expose data. This
+// is also the most a model may be allowed: never Revoked, never Unknown.
 export const GATEWAY_TCB = [
   "UpToDate",
   "SWHardeningNeeded",
@@ -119,7 +122,7 @@ export function checkNvidiaToken(token, nonce, keys) {
  * plus the first verified model, whose key the run encrypts to. A receipt passes
  * the NVIDIA verdict it recorded as `gpuToken`; a live run asks NVIDIA for one.
  */
-export async function verifyAttestation(body, nonce, { verifyQuote, gpuToken, getNvidiaToken = nvidiaToken, getNvidiaKeys = nvidiaKeys } = {}) {
+export async function verifyAttestation(body, nonce, { verifyQuote, gpuToken, allowUnpatchedModel = false, getNvidiaToken = nvidiaToken, getNvidiaKeys = nvidiaKeys } = {}) {
   const gateway = await checkReport(body.gateway_attestation, nonce, GATEWAY_TCB, verifyQuote)
     .catch(error => { throw new Error(`gateway: ${error.message}`); });
 
@@ -128,7 +131,7 @@ export async function verifyAttestation(body, nonce, { verifyQuote, gpuToken, ge
   const failures = [];
   for (const candidate of candidates) {
     try {
-      const model = await checkReport(candidate, nonce, MODEL_TCB, verifyQuote);
+      const model = await checkReport(candidate, nonce, allowUnpatchedModel ? GATEWAY_TCB : MODEL_TCB, verifyQuote);
       if (!candidate.nvidia_payload) throw new Error("no GPU evidence");
       const payload = parse(candidate.nvidia_payload);
       if (String(payload.nonce).toLowerCase() !== nonce) throw new Error("GPU evidence does not bind the nonce");
@@ -149,9 +152,9 @@ export async function verifyAttestation(body, nonce, { verifyQuote, gpuToken, ge
  * Fetches a fresh report for the model and verifies it. `evidence` is what a
  * receipt keeps; `attestation` is what was verified, with the key to encrypt to.
  */
-export async function attest(client, model) {
+export async function attest(client, model, { allowUnpatchedModel = false } = {}) {
   const nonce = bytesToHex(randomBytes(32));
   const { ohttp_key_config, ohttp_attestation, ...report } = await client.attestationReport(model, nonce);
-  const attestation = await verifyAttestation(report, nonce);
-  return { evidence: { nonce, report, gpuToken: attestation.model.gpuToken }, attestation };
+  const attestation = await verifyAttestation(report, nonce, { allowUnpatchedModel });
+  return { evidence: { nonce, report, gpuToken: attestation.model.gpuToken, allowUnpatchedModel }, attestation };
 }
