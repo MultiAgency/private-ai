@@ -1,0 +1,25 @@
+name: Private code review gate
+description: >-
+  Says whether a `/review` comment may start a review: only from someone with
+  write access. Run it in a job of its own, without a concurrency group, ahead
+  of the review job, so a refused comment can't cancel a review in progress.
+inputs:
+  github-token:
+    description: Token that can read the repository's collaborator roles.
+    default: ${{ github.token }}
+outputs:
+  allowed:
+    description: "\"true\" for pull request events and for comments from someone with write access."
+    value: ${{ steps.gate.outputs.allowed }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: 22
+
+    - id: gate
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: node "$GITHUB_ACTION_PATH/../gate.mjs"

@@ -11,9 +11,9 @@
 // Usage: node review.mjs --repo owner/name --pr N [--dry-run [--review path]] [--receipt path]
 // Env: NEARAI_API_KEY, GITHUB_TOKEN; optionally MODEL, RUBRIC, MAX_TURNS. In
 // GitHub Actions a `/review` comment starts a run only for someone who can write
-// to the repository (GITHUB_EVENT_NAME, GITHUB_EVENT_PATH).
+// to the repository (see gate.mjs).
 // It logs counts and hashes only: never code, prompts or the model's output.
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -22,6 +22,7 @@ import { runAgent } from "../core/agent.mjs";
 import { attest } from "../core/attest.mjs";
 import { nearai } from "../core/nearai.mjs";
 import { provenClaims, receipt } from "../core/receipt.mjs";
+import { commentEvent, refusal, reviewStarter } from "./gate.mjs";
 import { github } from "./github.mjs";
 import { definitions, tools, unpack } from "./repo.mjs";
 
@@ -151,19 +152,6 @@ export function renderReview({ review, turns, attestation, model, receiptSha256,
   return { body, comments: inline.map(f => ({ path: f.path, line: f.line, side: "RIGHT", body: `${label(f)} ${f.body}` })) };
 }
 
-// Each run spends the NEAR AI key's credits and posts to the pull request, so a
-// comment starts one only from someone who could push to the repository: the
-// same rule ai-review's action applies. Pull request events need no check.
-const WRITE_ROLES = ["admin", "maintain", "write"];
-
-/** Who started the run and whether they may: null when it wasn't a comment. */
-export async function reviewStarter(event, gh) {
-  if (!event?.comment) return null;
-  const login = event.comment.user.login;
-  const role = await gh.role(login);
-  return { login, role, allowed: WRITE_ROLES.includes(role) };
-}
-
 async function loadRubric(gh, ref, paths) {
   const parts = [];
   for (const path of paths) {
@@ -197,12 +185,10 @@ async function main() {
   const gh = github(env("GITHUB_TOKEN"), repo);
   const client = nearai(env("NEARAI_API_KEY"));
 
-  const event = process.env.GITHUB_EVENT_NAME === "issue_comment"
-    ? JSON.parse(readFileSync(env("GITHUB_EVENT_PATH"), "utf8"))
-    : null;
-  const starter = await reviewStarter(event, gh);
+  // The backstop for workflows without the review/gate job ahead of this one.
+  const starter = await reviewStarter(commentEvent(), gh);
   if (starter && !starter.allowed) {
-    console.log(`::notice::Not reviewing: @${starter.login} has the ${starter.role} role, and starting a review with /review needs write access.`);
+    console.log(`::notice::${refusal(starter)}`);
     return;
   }
 

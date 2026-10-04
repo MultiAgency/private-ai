@@ -76,12 +76,14 @@ commit. Findings on changed lines become inline comments, and the rest go in
 the review body. The body ends with what was verified and the receipt's hash.
 The receipt is uploaded as the run's `private-review-receipt` artifact.
 
-Pull requests from forks get no secrets, so they need an `issue_comment`
-trigger, as in
-[near-agencies](https://github.com/MultiAgency/near-agencies/blob/staging/.github/workflows/private-review.yml).
-A `/review` comment starts a review only from someone with write access to the
-repository: the Action looks up the commenter's role, because each run spends
-the NEAR AI key's credits and posts to the pull request.
+Pull requests from forks get no secrets, so a `/review` comment starts their
+review, from someone with write access to the repository. Put
+[`review/gate`](review/gate/action.yml) in a job of its own ahead of the review
+job, as [the page](https://multiagency.github.io/private-ai/#setup) writes it
+when you tick the fork option. The gate looks up the commenter's role. A
+refused comment never starts the review job, so it never loads the key and
+never cancels a review in progress through the job's concurrency group. The
+review Action repeats the check for workflows without the gate.
 
 To run it locally without posting:
 

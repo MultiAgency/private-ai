@@ -16,28 +16,9 @@ fetch("https://api.github.com/repos/MultiAgency/private-ai/commits/main", { head
   .then(sha => { if (/^[0-9a-f]{40}$/.test(sha)) { actionRef = sha; render(); } })
   .catch(() => {});
 
-function workflow({ forks }) {
-  const comment = forks ? `
-  issue_comment:
-    types: [created]` : "";
-  const condition = forks ? `
-    if: >-
-      (github.event_name == 'pull_request'
-        && github.event.pull_request.head.repo.full_name == github.repository
-        && !github.event.pull_request.draft)
-      || (github.event_name == 'issue_comment'
-        && github.event.issue.pull_request
-        && startsWith(github.event.comment.body, '/review'))` : `
-    if: \${{ !github.event.pull_request.draft }}`;
-  return `name: private-review
+const pinned = path => `MultiAgency/private-ai/${path}@${actionRef}${actionRef === "main" ? "" : ` # ${actionRef.slice(0, 7)}`}`;
 
-# Private AI review: the model reads this pull request only inside a NEAR AI
-# Cloud enclave, end-to-end encrypted. See https://github.com/MultiAgency/private-ai
-on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]${comment}
-
-jobs:
+const reviewJob = (condition = "") => `
   review:${condition}
     runs-on: ubuntu-latest
     concurrency:
@@ -48,9 +29,47 @@ jobs:
       pull-requests: write
       issues: write
     steps:
-      - uses: MultiAgency/private-ai/review@${actionRef}${actionRef === "main" ? "" : ` # ${actionRef.slice(0, 7)}`}
+      - uses: ${pinned("review")}
         with:
-          nearai-api-key: \${{ secrets.NEARAI_API_KEY }}
+          nearai-api-key: \${{ secrets.NEARAI_API_KEY }}`;
+
+// With /review, a gate job of its own decides first: a refused comment never
+// starts the review job, so it can't load the key or cancel a review in progress.
+const gatedJobs = () => `
+  gate:
+    if: >-
+      (github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name == github.repository
+        && !github.event.pull_request.draft)
+      || (github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && startsWith(github.event.comment.body, '/review')
+        && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      allowed: \${{ steps.gate.outputs.allowed }}
+    steps:
+      - id: gate
+        uses: ${pinned("review/gate")}
+${reviewJob(`
+    needs: gate
+    if: needs.gate.outputs.allowed == 'true'`)}`;
+
+function workflow({ forks }) {
+  return `name: private-review
+
+# Private AI review: the model reads this pull request only inside a NEAR AI
+# Cloud enclave, end-to-end encrypted. See https://github.com/MultiAgency/private-ai
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]${forks ? `
+  issue_comment:
+    types: [created]` : ""}
+
+jobs:${forks ? gatedJobs() : reviewJob(`
+    if: \${{ !github.event.pull_request.draft }}`)}
 `;
 }
 
