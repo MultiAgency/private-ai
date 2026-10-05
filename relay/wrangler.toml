@@ -1,0 +1,18 @@
+# Private Investigator's webhook relay. Deploy: npx wrangler deploy (from relay/),
+# after `wrangler secret put WEBHOOK_SECRET` and `wrangler secret put PAYMENT_KEY`.
+name = "private-investigator-relay"
+main = "worker.mjs"
+compatibility_date = "2026-10-01"
+
+[vars]
+OUTLAYER_PROJECT = "hack.near/private-investigator"
+# Per call, in OutLayer's micro-USD: $0.05, the relay key's max_per_call (a step costs about $0.01).
+COMPUTE_LIMIT = "50000"
+
+[[durable_objects.bindings]]
+name = "REVIEWS"
+class_name = "Reviews"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Reviews"]

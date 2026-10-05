@@ -2,20 +2,26 @@
    ui/src/styles.css): its tokens, square cards, Geist headings over Inter, and
    the dotted background. */
 
+/* Light mode is paper and manila: a pale lemon page drawn from the brand
+   yellow, a manila case file in the hero, ink for text. Dark mode keeps the
+   dashboard's grays. */
 :root {
-  --pattern-dot: 11%;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --primary: oklch(0.852 0.199 91.936);
-  --primary-foreground: oklch(0.421 0.095 57.708);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --success: oklch(0.52 0.13 150);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --pattern-dot: 18%;
+  --background: #FFF8D6;
+  --foreground: #1C1A12;
+  --card: #FFFDF2;
+  --primary: #F5C518;
+  --primary-foreground: #3A2E05;
+  --muted: #F6EBB8;
+  --muted-foreground: #6B6450;
+  --destructive: #B3261E;
+  --success: #2E7A4B;
+  --border: color-mix(in oklab, #1C1A12 14%, transparent);
+  --input: color-mix(in oklab, #1C1A12 22%, transparent);
+  --ring: #1C1A12;
+  --dot: #8A6D12;
+  --manila: #EBCB6B;
+  --manila-edge: #D4AE45;
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-heading: "Geist", "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
@@ -36,6 +42,9 @@
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
     --ring: oklch(0.556 0 0);
+    --dot: var(--foreground);
+    --manila: oklch(0.32 0.04 85);
+    --manila-edge: oklch(0.42 0.06 85);
     color-scheme: dark;
   }
 }
@@ -53,6 +62,9 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
+  --dot: var(--foreground);
+  --manila: oklch(0.32 0.04 85);
+  --manila-edge: oklch(0.42 0.06 85);
   color-scheme: dark;
 }
 
@@ -67,7 +79,7 @@ body {
   font: 14px/1.55 var(--font-sans);
   -webkit-font-smoothing: antialiased;
   background-color: var(--background);
-  background-image: radial-gradient(circle at 1px 1px, color-mix(in oklab, var(--foreground) var(--pattern-dot), transparent) 1px, transparent 0);
+  background-image: radial-gradient(circle at 1px 1px, color-mix(in oklab, var(--dot) var(--pattern-dot), transparent) 1px, transparent 0);
   background-size: 22px 22px;
   background-attachment: fixed;
 }
@@ -123,8 +135,6 @@ code { background: var(--muted); padding: 1px 4px; overflow-wrap: anywhere; }
 .button.icon:hover { background: var(--muted); }
 .button[aria-disabled] { opacity: 0.5; pointer-events: none; }
 .button svg { width: 14px; height: 14px; }
-.arrow::after { content: "→"; }
-.badge { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border: 1px solid var(--border); background: var(--background); font-size: 12px; }
 
 /* Cards */
 .card { background: var(--card); box-shadow: 0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent); padding: 16px; font-size: 12px; line-height: 1.65; }
@@ -135,23 +145,52 @@ code { background: var(--muted); padding: 1px 4px; overflow-wrap: anywhere; }
 .card.highlight { border-left: 2px solid var(--primary); }
 
 /* Hero */
-.hero { position: relative; overflow: hidden; margin-top: 32px; padding: 48px 32px; }
-@media (max-width: 640px) { .hero { padding: 32px 20px; } }
-.hero h1 { font: 600 clamp(32px, 6vw, 44px)/1.1 var(--font-heading); letter-spacing: -0.03em; margin: 16px 0 12px; }
-.hero .lede { font-size: 17px; line-height: 1.55; color: var(--muted-foreground); max-width: 34em; margin: 0 0 24px; }
+/* Hero: the copy on the left, a real review as a manila case file on the
+   right, its seal checked live. The page's one bold element. */
+.hero { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 56px; align-items: start; margin-top: 88px; }
+@media (max-width: 880px) { .hero { grid-template-columns: minmax(0, 1fr); gap: 40px; margin-top: 40px; } }
+.hero h1 { font: 600 clamp(42px, 6.6vw, 68px)/1 var(--font-heading); letter-spacing: -0.04em; margin: 0 0 20px; }
+.hero .lede { font-size: 18px; line-height: 1.55; color: var(--muted-foreground); max-width: 30em; margin: 0 0 28px; }
 .hero .actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.hero > :not(.field) { position: relative; }
-.field {
-  position: absolute;
-  inset: 24px 24px 24px auto;
-  width: 46%;
-  background-image: radial-gradient(circle, color-mix(in oklab, var(--foreground) 18%, transparent) 2px, transparent 2.5px);
-  background-size: 14px 14px;
-  -webkit-mask-image: radial-gradient(ellipse at 70% 40%, black 10%, transparent 72%);
-  mask-image: radial-gradient(ellipse at 70% 40%, black 10%, transparent 72%);
-  pointer-events: none;
+
+.casefile { margin: 0; }
+.casefile .tab { display: inline-block; background: var(--manila); border-radius: 6px 6px 0 0; padding: 7px 14px 5px; font: 500 12px var(--font-mono); color: var(--foreground); }
+.casefile .folder { background: var(--manila); border-top-right-radius: 6px; padding: 14px 14px 18px; box-shadow: inset 0 -2px 0 var(--manila-edge); }
+.casefile .page { background: var(--card); padding: 18px 20px 16px; font-size: 13px; line-height: 1.6; box-shadow: 0 1px 0 color-mix(in oklab, var(--foreground) 14%, transparent); }
+.casefile .page p { margin: 0 0 6px; }
+.finding-label { font: 600 13px var(--font-heading); }
+.finding-where code { background: none; padding: 0; color: var(--muted-foreground); }
+.casefile .whole { display: inline-block; margin-top: 6px; font-size: 12px; text-underline-offset: 3px; }
+
+.seal-row { display: flex; align-items: center; gap: 16px; margin-top: 16px; }
+.seal-note { margin: 0; font-size: 12px; line-height: 1.5; max-width: 26em; }
+.seal {
+  flex: none;
+  width: 92px;
+  height: 92px;
+  border-radius: 50%;
+  border: 2px solid var(--foreground);
+  outline: 1px solid var(--foreground);
+  outline-offset: -8px;
+  background: var(--card);
+  color: var(--foreground);
+  font: 600 12px/1.15 var(--font-heading);
+  text-align: center;
+  padding: 0 12px;
+  cursor: pointer;
 }
-@media (max-width: 720px) { .field { display: none; } }
+.seal:hover { background: var(--primary); }
+.seal:focus-visible { box-shadow: 0 0 0 3px var(--primary), 0 0 0 5px var(--foreground); }
+.seal.checking { cursor: progress; }
+.seal.ok { background: var(--success); border-color: var(--success); outline-color: var(--card); color: var(--card); }
+.seal.failed { border-color: var(--destructive); outline-color: var(--destructive); color: var(--destructive); }
+.seal-checks { list-style: none; margin: 14px 0 0; padding: 14px 16px; background: var(--card); font-size: 12px; line-height: 1.55; display: grid; gap: 6px; }
+.seal-checks li { padding-left: 20px; position: relative; overflow-wrap: anywhere; animation: arrive 0.32s ease-out both; animation-delay: calc(var(--i) * 0.22s); }
+.seal-checks li::before { content: "✓"; position: absolute; left: 0; color: var(--success); font-weight: 700; }
+.seal-checks strong { margin-right: 4px; }
+.seal-checks[hidden] { display: none; }
+@keyframes arrive { from { opacity: 0; transform: translateY(3px); } }
+@media (prefers-reduced-motion: reduce) { .seal-checks li { animation: none; } }
 
 /* Sections */
 section { margin-top: 64px; }
@@ -159,10 +198,12 @@ section { margin-top: 64px; }
 .section-head h2 { font: 600 18px var(--font-heading); letter-spacing: -0.01em; margin: 0 0 4px; }
 .section-head p { margin: 0; max-width: 42em; color: var(--muted-foreground); }
 
-.grid { display: grid; gap: 12px; }
-.grid.four { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
-.grid.two { grid-template-columns: 1fr 1fr; }
-@media (max-width: 640px) { .grid.two { grid-template-columns: 1fr; } }
+.steps { list-style: none; counter-reset: step; margin: 0 0 16px; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; }
+@media (max-width: 760px) { .steps { grid-template-columns: minmax(0, 1fr); } }
+.steps li { counter-increment: step; border-top: 2px solid var(--foreground); padding-top: 12px; }
+.steps li::before { content: counter(step); font: 600 13px var(--font-heading); color: var(--muted-foreground); }
+.steps h3 { font: 600 15px var(--font-heading); margin: 4px 0 6px; }
+.steps p { margin: 0; font-size: 13px; line-height: 1.6; color: var(--muted-foreground); }
 .step-label { color: var(--muted-foreground); margin-bottom: 4px !important; }
 
 /* Setup */
@@ -225,10 +266,16 @@ section { margin-top: 64px; }
 .result dt { color: var(--muted-foreground); }
 .result dd { margin: 0; min-width: 0; }
 
-.limits { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+.limits { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 32px; }
+@media (max-width: 640px) { .limits { grid-template-columns: minmax(0, 1fr); } }
+.limits h3 { font: 600 14px var(--font-heading); margin: 0 0 4px; }
+.limits p { margin: 0; font-size: 13px; line-height: 1.6; }
 
 footer { margin-top: 80px; border-top: 1px solid var(--border); }
 footer .container { display: flex; flex-wrap: wrap; gap: 12px 24px; justify-content: space-between; padding-top: 24px; padding-bottom: 40px; color: var(--muted-foreground); font-size: 12px; }
 footer nav { display: flex; gap: 16px; }
 footer a { text-decoration: none; }
 footer a:hover { color: var(--foreground); }
+
+/* After installing the App: where to go next. */
+.banner { scroll-margin-top: 96px; margin: 32px 0 0; padding: 16px 20px; background: var(--card); border-left: 3px solid var(--success); font-size: 15px; line-height: 1.6; }

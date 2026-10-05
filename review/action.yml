@@ -21,6 +21,12 @@ inputs:
       stops before sending any code unless the model passes the checks; `npm run
       models` in MultiAgency/private-ai lists the ones that pass today.
     default: z-ai/glm-5.3-flash
+  passes:
+    description: >-
+      How many independent reviews to run in parallel, merged one finding per line.
+      Measured in eval/, 3 turned a finding caught by luck into one caught every
+      run, in the same time, at about three times the NEAR AI cost (cents).
+    default: "3"
   allow-unpatched-model:
     description: >-
       "true" accepts a model whose Intel platform update is pending, a weaker
@@ -44,6 +50,7 @@ runs:
         RUBRIC: ${{ inputs.rubric }}
         MODEL: ${{ inputs.model }}
         ALLOW_UNPATCHED_MODEL: ${{ inputs.allow-unpatched-model }}
+        PASSES: ${{ inputs.passes }}
       run: node "$GITHUB_ACTION_PATH/review.mjs" --receipt "$RUNNER_TEMP/private-review-receipt.json"
 
     - if: always()

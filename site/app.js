@@ -48,7 +48,8 @@ const reviewJob = (options, condition = "") => `
 const gatedJobs = options => `
   gate:
     if: >-
-      (github.event_name == 'pull_request'
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'pull_request'
         && github.event.pull_request.head.repo.full_name == github.repository
         && !github.event.pull_request.draft)
       || (github.event_name == 'issue_comment'
@@ -74,7 +75,9 @@ function workflow({ forks, ...options }) {
 # Cloud enclave, end-to-end encrypted. See https://github.com/MultiAgency/private-ai
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]${forks ? `
+    types: [opened, synchronize, ready_for_review, reopened]
+  # Run by hand (Actions tab, Run workflow) to check the setup: no code is read.
+  workflow_dispatch:${forks ? `
   issue_comment:
     types: [created]` : ""}
 
@@ -125,14 +128,22 @@ $("#theme").addEventListener("click", () => {
 
 const result = $("#check-result");
 
-async function check(text, label) {
+/** A receipt's verified claims, or the reason it isn't verified (thrown). */
+async function verify(text, options = {}) {
+  const { receipt, sha256, gateway, model, runs, subjectConfirmed } = await verifyReceipt(text, options);
+  const claims = provenClaims({ model: receipt.model, attestation: { model, gateway }, turns: receipt.turns.length, runs });
+  return { receipt, sha256, claims, subject: subjectConfirmed ? options.subject : receipt.subject };
+}
+
+async function check(text, label, options) {
   result.hidden = false;
   result.className = "card result running";
   result.innerHTML = `<p>Checking ${escape(label)}: verifying the Intel quotes, NVIDIA's verdict and every signature…</p>`;
   try {
-    const { receipt, sha256, gateway, model } = await verifyReceipt(text);
-    const claims = provenClaims({ model: receipt.model, attestation: { model, gateway }, turns: receipt.turns.length });
-    const subject = Object.entries(receipt.subject ?? {}).map(([k, v]) => `<dt>${escape(k.replace(/_/g, " "))}</dt><dd><code>${escape(v)}</code></dd>`).join("");
+    const { receipt, sha256, claims, subject: named } = await verify(text, options);
+    const subject = named
+      ? Object.entries(named).map(([k, v]) => `<dt>${escape(k.replace(/_/g, " "))}</dt><dd><code>${escape(v)}</code></dd>`).join("")
+      : `<dt>subject</dt><dd>committed, not named: open the link in the review to see which pull request</dd>`;
     result.className = "card result ok";
     result.innerHTML = `
       <p class="verdict">Verified</p>
@@ -144,6 +155,66 @@ async function check(text, label) {
     result.className = "card result failed";
     result.innerHTML = `<p class="verdict">Not verified</p><p>${escape(error.message)}</p>`;
   }
+}
+
+// The hero's seal: the same checks on the sample review's receipt. Its lines
+// arrive one by one, the page's one piece of motion, in answer to the press.
+const seal = $("#seal");
+seal.addEventListener("click", async () => {
+  const list = $("#seal-checks");
+  const note = $("#seal-note");
+  seal.disabled = true;
+  seal.classList.remove("ok", "failed");
+  seal.classList.add("checking");
+  seal.querySelector("span").textContent = "Checking";
+  note.textContent = "Fetching Intel's collateral and NVIDIA's keys, then checking every signature…";
+  list.hidden = true;
+  const started = performance.now();
+  try {
+    const { claims } = await verify(await fetch("sample-receipt.json").then(r => r.text()));
+    list.innerHTML = claims.map(([claim, text], i) => `<li style="--i:${i}"><strong>${escape(claim)}</strong> ${code(text)}</li>`).join("");
+    list.hidden = false;
+    seal.classList.add("ok");
+    seal.querySelector("span").textContent = "Sealed";
+    note.textContent = `Verified in ${((performance.now() - started) / 1000).toFixed(1)} s, here in your browser.`;
+  } catch (error) {
+    seal.classList.add("failed");
+    seal.querySelector("span").textContent = "Not verified";
+    note.textContent = error.message;
+  } finally {
+    seal.classList.remove("checking");
+    seal.disabled = false;
+  }
+});
+
+// A hosted review links its receipt as #check&receipt=…&project=…&salt=…&subject=…:
+// the receipt is fetched from OutLayer's public storage, and the salt and
+// subject (in the fragment, which never reaches a server) open its commitment.
+async function checkLinked() {
+  const params = new URLSearchParams(location.hash.replace(/^#check&?/, ""));
+  const [sha, project] = [params.get("receipt"), params.get("project")];
+  if (!sha || !project) return;
+  document.getElementById("check")?.scrollIntoView();
+  try {
+    const url = `https://api.outlayer.ai/public/storage/get?project=${encodeURIComponent(project)}&key=${encodeURIComponent(`receipt:${sha}`)}&format=raw`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`no receipt published at ${project} under ${sha} (${response.status})`);
+    const text = await response.text();
+    const subject = params.get("subject") && JSON.parse(atob(params.get("subject").replace(/-/g, "+").replace(/_/g, "/")));
+    await check(text, "the receipt this review links", { salt: params.get("salt") ?? undefined, subject: subject || undefined, expectSha256: sha });
+  } catch (error) {
+    result.hidden = false;
+    result.className = "card result failed";
+    result.innerHTML = `<p class="verdict">Not verified</p><p>${escape(error.message)}</p>`;
+  }
+}
+checkLinked();
+
+// GitHub sends people here after they install the App.
+if (location.hash === "#installed") {
+  const banner = $("#installed-banner");
+  banner.hidden = false;
+  banner.scrollIntoView();
 }
 
 $("#check-sample").addEventListener("click", async () => {

@@ -5,7 +5,12 @@
 // and reports how often each bug was caught. Nothing is posted.
 //
 // Usage: node eval/run.mjs [--case eval/cases/x.json] [--runs 4] [--passes 1]
+//                          [--runner rust [--reply-cap N]]
+// --runner rust scores the hosted App's reviewer (app/) on the same case, with
+// --passes merged as the hosted job merges them, from its dry-run build:
+//   cargo build --release --target wasm32-wasip2 --no-default-features --target-dir target/dry
 // Env: NEARAI_API_KEY, GITHUB_TOKEN.
+import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -22,6 +27,8 @@ const { values } = parseArgs({
     case: { type: "string", default: "eval/cases/near-agencies-94.json" },
     runs: { type: "string", default: "4" },
     passes: { type: "string", default: "1" },
+    runner: { type: "string", default: "node" },
+    "reply-cap": { type: "string" },
   },
 });
 const casePath = resolve(values.case);
@@ -48,12 +55,30 @@ const tarball = await gh.tarball(spec.head);
 const { attestation } = await attest(client, model);
 const publicKey = attestation.model.publicKey;
 
-console.log(`${spec.name}: ${values.runs} runs of ${values.passes} pass${values.passes === "1" ? "" : "es"}`);
+/** One review by the App's reviewer: the dry-run build under wasmtime, on the same commit and description. */
+function rustReview() {
+  const wasm = resolve("target/dry/wasm32-wasip2/release/private-investigator.wasm");
+  const input = JSON.stringify({
+    repo: spec.repo, pr: spec.pull_request, base: spec.base, head: spec.head, description: pr.body, max_turns: 30, passes: Number(values.passes),
+    ...(values["reply-cap"] && { reply_cap: Number(values["reply-cap"]) }),
+  });
+  return new Promise((done, fail) => {
+    const child = execFile("wasmtime", ["run", "-S", "http", "-S", "inherit-env=n", "--env", "NEARAI_API_KEY", "--env", "GITHUB_TOKEN", wasm],
+      { maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+        if (error) return fail(new Error(`rust reviewer: ${stderr.trim().split("\n").at(-1) || error.message}`));
+        const out = JSON.parse(stdout);
+        done({ review: out.review, turns: Array(out.turns).fill(null) });
+      });
+    child.stdin.end(input);
+  });
+}
+
+console.log(`${spec.name}: ${values.runs} runs of ${values.runner === "rust" ? "the App's reviewer, " : ""}${values.passes} pass${values.passes === "1" ? "" : "es"}`);
 const runs = await Promise.all(Array.from({ length: Number(values.runs) }, async (_, i) => {
   const head = unpack(tarball);
   const started = Date.now();
   try {
-    const { review, turns } = await reviewChange({
+    const { review, turns } = values.runner === "rust" ? await rustReview() : await reviewChange({
       client, model, publicKey, pr, files: compare.files, rubric, root: head.root,
       maxTurns: 30, passes: Number(values.passes),
     });

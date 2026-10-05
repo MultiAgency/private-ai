@@ -18,3 +18,17 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run check && npm test
+
+  # The hosted reviewer's Rust core (app/): the same checks on the same
+  # evidence as the JS tests, and the wasm32-wasip2 build OutLayer runs.
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      # rust-toolchain.toml pins the toolchain and the wasm32-wasip2 target.
+      - run: cargo test --locked
+      - run: cargo build --release --locked --target wasm32-wasip2 --no-default-features
+      # The deployed builds recorded in app/builds.json rebuild bit for bit.
+      - run: app/verify-builds.sh

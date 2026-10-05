@@ -23,6 +23,7 @@ export function github(token, repo) {
   }
 
   return {
+    pulls: () => send("GET", "/pulls?per_page=1").then(r => r.json()),
     pull: number => send("GET", `/pulls/${number}`).then(r => r.json()),
 
     files: number => all(`/pulls/${number}/files`),

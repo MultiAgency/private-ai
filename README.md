@@ -5,9 +5,12 @@ service runs a model inside a [NEAR AI Cloud](https://docs.near.ai/cloud/private
 enclave (Intel TDX with NVIDIA confidential GPUs), encrypts everything to that
 enclave's key, and leaves a receipt anyone can re-check.
 
-The first service is **private code review** of pull requests, in
-[`review/`](review/). [`core/`](core/) is what every service shares, and it
-runs in Node and in the browser alike. The page at
+The first service is **private code review** of pull requests: a GitHub
+Action in [`review/`](review/), and a hosted GitHub App in [`app/`](app/) (Rust,
+run on [OutLayer](https://outlayer.ai)) with its webhook relay in
+[`relay/`](relay/). Both run the same review ([`review/review.json`](review/review.json)).
+[`core/`](core/) is what every service shares, and it runs in Node and in the
+browser alike. The page at
 **[multiagency.github.io/private-ai](https://multiagency.github.io/private-ai/)**
 sets a repository up, shows a real review, and checks receipts in the browser.
 
@@ -33,9 +36,12 @@ request and response bytes checks out. If any check fails, the run stops.
 
 **What it does not prove:**
 
-- **What happens on the machine that runs the service.** Code review runs as a
-  GitHub Action on the client's own runner, which already has their code. This
-  repository is public so that anyone can read what that Action does.
+- **What happens on the machine that runs the service.** The Action runs on
+  the client's own runner, which already has their code; this repository is
+  public so anyone can read what it does. The App runs in an attested OutLayer
+  enclave whose receipt names the exact build; each release is recorded with
+  its commit in [`app/builds.json`](app/builds.json) and rebuilds bit for bit
+  from it (`app/verify-builds.sh`, run by CI).
 - **Which model instance answered.** Instances of a model share one signing
   key, so the signature proves an attested enclave answered, not which one
   (see NEAR's [verification notes](https://docs.near.ai/cloud/verification/cloud-api/model-attestations)).
@@ -44,6 +50,30 @@ request and response bytes checks out. If any check fails, the run stops.
   they measure. Auditing those images is a separate step.
 
 ## Private Investigator: private code review
+
+A second pair of private eyes on your pull requests. (Say the repo's name out loud.)
+
+### The GitHub App
+
+[Install it](https://github.com/apps/private-investigator/installations/new) and
+pick the repositories. It reviews a pull request when it opens, reopens or
+leaves draft, and again when someone with write access comments `/review` or
+presses Re-run on its check. Free for 10 reviews per installation a month.
+
+- **Where your code goes:** an attested OutLayer enclave fetches it from GitHub
+  with the App's token, and sends it end-to-end encrypted to the attested NEAR
+  AI model. Each step of the review is an OutLayer run whose attestation binds
+  what it returned, and nothing that leaves a run names your repository or
+  holds your code.
+- **The receipt** is published to OutLayer's public storage. It commits to your
+  pull request with a salt that only the review's link carries, so the public
+  receipt does not name your repository; the link opens and checks it.
+- **What its operators can see:** GitHub's event notices (titles, descriptions,
+  who pushed) pass through the relay, which forwards only ids and keeps nothing,
+  plus review counts per installation and when steps run. Never code, never the
+  review.
+
+### The GitHub Action
 
 [The page](https://multiagency.github.io/private-ai/#setup) writes this for a
 repository, pinned to the latest commit. By hand: add a workflow, and a NEAR AI

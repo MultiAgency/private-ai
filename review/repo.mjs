@@ -6,11 +6,11 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 
-const MAX_FILE_BYTES = 1_000_000;
-const MAX_LINES = 2_000;
-const MAX_MATCHES = 200;
-const MAX_ENTRIES = 500;
-const SKIP_DIRS = new Set([".git", "node_modules"]);
+import spec from "./review.json" with { type: "json" };
+
+// Shared with the hosted App (app/), like the tool definitions below.
+const { max_file_bytes: MAX_FILE_BYTES, max_lines: MAX_LINES, max_matches: MAX_MATCHES, max_entries: MAX_ENTRIES } = spec.repo_limits;
+const SKIP_DIRS = new Set(spec.repo_limits.skip_dirs);
 
 export function unpack(tarball) {
   const dir = mkdtempSync(join(tmpdir(), "private-review-"));
@@ -23,47 +23,7 @@ export function unpack(tarball) {
   return { root: realpathSync(root), remove: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-export const definitions = [
-  {
-    type: "function",
-    function: {
-      name: "list_files",
-      description: "List the files and directories in a directory of the pull request's head commit.",
-      parameters: { type: "object", properties: { path: { type: "string", description: "Directory, relative to the repository root. Default: the root." } } },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "read_file",
-      description: `Read a file from the pull request's head commit, with line numbers. At most ${MAX_LINES} lines per call.`,
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string" },
-          start_line: { type: "integer", description: "First line, from 1. Default 1." },
-          end_line: { type: "integer", description: "Last line. Default: start_line + 1999." },
-        },
-        required: ["path"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "grep",
-      description: `Search the pull request's head commit with a JavaScript regular expression. Returns up to ${MAX_MATCHES} matching lines as path:line: text.`,
-      parameters: {
-        type: "object",
-        properties: {
-          pattern: { type: "string" },
-          path: { type: "string", description: "Directory or file to search, relative to the repository root. Default: the root." },
-        },
-        required: ["pattern"],
-      },
-    },
-  },
-];
+export const definitions = spec.repo_tools;
 
 export function tools(root) {
   function inside(path = ".") {

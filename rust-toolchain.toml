@@ -1,0 +1,4 @@
+# Pinned so a release can be rebuilt bit for bit (app/build.sh).
+[toolchain]
+channel = "1.97.0"
+targets = ["wasm32-wasip2"]

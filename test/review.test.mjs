@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { checkSubmission, commentableLines, earlierFindings, mergeFindings, renderReview, userPrompt } from "../review/review.mjs";
+import { checkSubmission, commentableLines, earlierFindings, mergeFindings, renderReview, systemPrompt, userPrompt } from "../review/review.mjs";
 
 const files = [{
   filename: "src/add.js",
@@ -156,4 +157,16 @@ test("a review on a model with a pending platform update says the policy allowed
     commentable: new Set(),
   });
   assert.match(body, /TCB OutOfDate \(an Intel platform update is pending, which this repository's policy allows for the model\)/);
+});
+
+test("the golden case the hosted App must match (app/tests/review.rs)", () => {
+  const c = JSON.parse(readFileSync(new URL("fixtures/review-case.json", import.meta.url)));
+  assert.equal(systemPrompt(c.rubric), c.system_prompt);
+  assert.equal(userPrompt(c.pr, c.files, c.earlier), c.user_prompt);
+  assert.deepEqual([...commentableLines(c.files)].sort(), c.commentable);
+  for (const [submission, problem] of c.submissions) assert.equal(checkSubmission(submission) ?? null, problem);
+  const attestation = tcb => ({ model: { tcb, signer: "5a02".padEnd(64, "0"), composeHash: "945b".padEnd(64, "0") }, gateway: { tcb: "OutOfDate" } });
+  for (const r of c.renders) {
+    assert.deepEqual(renderReview({ review: r.review, turns: Array(r.turns).fill({}), attestation: attestation(r.tcb), model: "z-ai/glm-5.3-flash", receiptSha256: "ab".repeat(32), runUrl: r.run_url ?? undefined, commentable: new Set(c.commentable) }), r.expected);
+  }
 });

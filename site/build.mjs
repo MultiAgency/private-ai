@@ -56,9 +56,24 @@ function renderSample({ body, comments }) {
 }
 
 const sample = JSON.parse(readFileSync(new URL("sample-review.json", site), "utf8"));
+
+// The hero's case file: the sample's first finding, cut at its first sentence.
+function renderFinding({ comments }) {
+  const [first] = comments;
+  if (!first) throw new Error("sample review has no inline finding for the hero");
+  const [label, ...rest] = first.body.split(":** ");
+  const sentence = rest.join(":** ").match(/^.*?[.!?](?=\s|$)/)?.[0] ?? rest.join(":** ");
+  return `<p class="finding-label">${inline(`${label.replace(/^\*\*/, "")}`)}</p>
+            <p class="finding-where"><code>${inline(`${first.path}:${first.line}`)}</code></p>
+            <p class="finding-text">${inline(sentence)}</p>`;
+}
 const page = readFileSync(new URL("index.html", site), "utf8");
-if (!page.includes("<!-- SAMPLE_REVIEW -->")) throw new Error("index.html has no <!-- SAMPLE_REVIEW --> marker");
-writeFileSync(new URL("index.html", out), page.replace("<!-- SAMPLE_REVIEW -->", renderSample(sample)));
+for (const marker of ["<!-- SAMPLE_REVIEW -->", "<!-- SAMPLE_FINDING -->"]) {
+  if (!page.includes(marker)) throw new Error(`index.html has no ${marker} marker`);
+}
+writeFileSync(new URL("index.html", out), page
+  .replace("<!-- SAMPLE_REVIEW -->", renderSample(sample))
+  .replace("<!-- SAMPLE_FINDING -->", renderFinding(sample)));
 
 for (const file of ["style.css", "icon.svg", "sample-receipt.json"]) {
   copyFileSync(new URL(file, site), new URL(file, out));

@@ -13,10 +13,11 @@ if (!path) {
 }
 
 try {
-  const { receipt, sha256, gateway, model } = await verifyReceipt(readFileSync(path, "utf8"));
+  const { receipt, sha256, gateway, model, runs } = await verifyReceipt(readFileSync(path, "utf8"));
   console.log(`receipt sha256 ${sha256}, created ${receipt.created_at}`);
   for (const [key, value] of Object.entries(receipt.subject ?? {})) console.log(`  ${key}: ${value}`);
-  for (const [claim, text] of provenClaims({ model: receipt.model, attestation: { model, gateway }, turns: receipt.turns.length })) {
+  if (receipt.subject_sha256) console.log(`  subject: committed (sha256 ${receipt.subject_sha256}); the review's link opens it`);
+  for (const [claim, text] of provenClaims({ model: receipt.model, attestation: { model, gateway }, turns: receipt.turns.length, runs })) {
     console.log(`${claim}: ${text.replace(/`/g, "")}`);
   }
   console.log("verified");

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Private Investigator · MultiAgency</title>
-  <meta name="description" content="AI review of private pull requests, read only inside a verified NEAR AI Cloud enclave, with a receipt anyone can check.">
+  <meta name="description" content="Private Investigator: a second pair of private eyes on your pull requests. AI review read only inside a verified NEAR AI Cloud enclave, with a receipt anyone can check.">
   <meta name="theme-color" content="#ffff33">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -24,7 +24,7 @@
         MultiAgency
       </a>
       <nav class="nav" aria-label="Sections">
-        <a href="#setup">Set up</a>
+        <a href="#ways">Get it</a>
         <a href="#sample">Sample</a>
         <a href="#check">Check a receipt</a>
       </nav>
@@ -38,46 +38,57 @@
   </header>
 
   <main class="container">
-    <div class="card hero">
-      <div class="field" aria-hidden="true"></div>
-      <span class="badge">Private code review · Verifiable · Open source</span>
-      <h1>Private Investigator</h1>
-      <p class="lede">A second AI reviewer for your private pull requests. Your code is read only inside a hardware enclave that proves what it is, and every review comes with a receipt anyone can check.</p>
-      <div class="actions">
-        <a class="button primary arrow" href="#setup">Set it up</a>
-        <a class="button" href="#sample">See a review</a>
-        <a class="button" href="#check">Check a receipt</a>
+    <section class="hero" aria-labelledby="title">
+      <div class="hero-copy">
+        <h1 id="title">Private Investigator</h1>
+        <p class="lede">A second pair of private eyes on your pull requests. Your code is read only inside hardware enclaves that prove what they run, and every review comes with a receipt anyone can check.</p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/apps/private-investigator/installations/new">Install on GitHub</a>
+          <a class="button" href="#setup">Run it as an Action</a>
+          <a class="button" href="#how">How it works</a>
+        </div>
       </div>
-    </div>
+      <figure class="casefile" aria-labelledby="casefile-title">
+        <figcaption class="tab" id="casefile-title">MultiAgency/near-agencies#78</figcaption>
+        <div class="folder">
+          <div class="page">
+            <!-- SAMPLE_FINDING -->
+            <a class="whole" href="#sample">Read the whole review</a>
+          </div>
+          <div class="seal-row">
+            <button type="button" class="seal" id="seal"><span>Check the seal</span></button>
+            <p class="seal-note" id="seal-note">Verifies this review's receipt in your browser: Intel's quotes, NVIDIA's verdict and every signature.</p>
+          </div>
+          <ol class="seal-checks" id="seal-checks" hidden></ol>
+        </div>
+      </figure>
+    </section>
+
+    <p class="banner" id="installed-banner" hidden><strong>You're set.</strong> Open a pull request or mark one ready for review, or comment <code>/review</code> on one. The <em>Private Investigator</em> check appears within seconds, and the review lands a few minutes later, with its receipt.</p>
+
+    <section id="ways" aria-labelledby="ways-title">
+      <div class="section-head">
+        <h2 id="ways-title">Two ways to run it</h2>
+        <p>The same review and the same receipts, run where you prefer.</p>
+      </div>
+      <ul class="limits">
+        <li><h3>The GitHub App</h3><p class="muted">Install it and pick the repositories: nothing else to set up. It reviews a pull request when it opens or leaves draft, and again when someone with write access comments <code>/review</code>. Your code is fetched and read only inside an attested <a href="https://outlayer.ai">OutLayer</a> enclave, running our published build. Free for 10 reviews per installation a month.</p><p><a class="button primary" href="https://github.com/apps/private-investigator/installations/new">Install on GitHub</a></p></li>
+        <li><h3>The GitHub Action</h3><p class="muted">Runs on your own GitHub runner, which already has your code, with your own NEAR AI key, so not even an enclave of ours touches it. About ten minutes to set up the first time.</p><p><a class="button" href="#setup">Set it up</a></p></li>
+      </ul>
+    </section>
 
     <section aria-labelledby="how">
       <div class="section-head">
         <h2 id="how">How it works</h2>
-        <p>Three checks between your code and the model, all on your own GitHub runner.</p>
+        <p>Three checks between your code and the model, then a receipt.</p>
       </div>
-      <div class="grid four">
-        <div class="card">
-          <p class="step-label">Step 1</p>
-          <h3>Attest</h3>
-          <p class="muted">Before any code leaves your runner, check NEAR AI Cloud's evidence for a fresh nonce: Intel's signed TDX quote for the model's machine, fully patched, and NVIDIA's signed verdict on its GPUs.</p>
-        </div>
-        <div class="card">
-          <p class="step-label">Step 2</p>
-          <h3>Encrypt</h3>
-          <p class="muted">Encrypt every request, tool calls included, to the key that evidence binds. Only the attested enclave can read your code. The gateway in front of it sees ciphertext.</p>
-        </div>
-        <div class="card">
-          <p class="step-label">Step 3</p>
-          <h3>Sign</h3>
-          <p class="muted">The enclave signs each reply over the exact request and response bytes, and a reply is used only once its signature checks out.</p>
-        </div>
-        <div class="card">
-          <p class="step-label">Step 4</p>
-          <h3>Receipt</h3>
-          <p class="muted">The evidence and signatures form a receipt, saved with the run. It holds hashes, not code, so anyone can check it.</p>
-        </div>
-      </div>
-      <p class="muted">It runs as a GitHub Action on your runner, which already has your code, with your own NEAR AI key. No MultiAgency server sees your code, and <a href="https://github.com/MultiAgency/private-ai">the source is public</a> so you can read exactly what the Action does.</p>
+      <ol class="steps">
+        <li><h3>Attest</h3><p>Before any code is sent, check NEAR AI Cloud's evidence for a fresh nonce: Intel's signed quote for the model's machine, fully patched, and NVIDIA's signed verdict on its GPUs.</p></li>
+        <li><h3>Encrypt</h3><p>Encrypt every request, tool calls included, to the key that evidence binds. Only the attested enclave can read your code; the gateway in front of it sees ciphertext.</p></li>
+        <li><h3>Sign</h3><p>The enclave signs each reply over the exact request and response bytes, and a reply is used only once its signature checks out.</p></li>
+        <li><h3>Receipt</h3><p>The evidence and signatures form a receipt, saved with the run. It holds hashes, not code, so anyone can check it.</p></li>
+      </ol>
+      <p class="muted">With the Action, these steps run on your runner. With the App, they run inside an attested OutLayer enclave that fetches your code from GitHub itself, and the receipt adds each step's attestation, naming the exact build that read your code. Either way no MultiAgency server sees your code, and <a href="https://github.com/MultiAgency/private-ai">the source is public</a>.</p>
     </section>
 
     <section id="setup" aria-labelledby="setup-title">
@@ -104,7 +115,7 @@
           <p class="step-label">Step 2</p>
           <h3>Add it as the repository secret <code>NEARAI_API_KEY</code></h3>
           <div>
-            <div class="row"><a id="secrets-link" class="button arrow" target="_blank" rel="noopener">Open the repository's secrets</a><span class="muted">or run</span></div>
+            <div class="row"><a id="secrets-link" class="button" target="_blank" rel="noopener">Open the repository's secrets</a><span class="muted">or run</span></div>
             <div class="code"><pre id="secret-command"></pre><button type="button" class="button" data-copy="#secret-command">Copy</button></div>
           </div>
         </li>
@@ -112,14 +123,14 @@
           <p class="step-label">Step 3</p>
           <h3>Add the workflow</h3>
           <div>
-            <div class="row"><a id="create-link" class="button primary arrow" target="_blank" rel="noopener">Create it on GitHub</a><span class="muted">or save this as <code>.github/workflows/private-review.yml</code></span></div>
+            <div class="row"><a id="create-link" class="button primary" target="_blank" rel="noopener">Create it on GitHub</a><span class="muted">or save this as <code>.github/workflows/private-review.yml</code></span></div>
             <div class="code"><pre id="workflow"></pre><button type="button" class="button" data-copy="#workflow">Copy</button></div>
           </div>
         </li>
         <li class="card">
           <p class="step-label">Step 4</p>
-          <h3>Open a pull request</h3>
-          <p class="muted">The review appears as a pull request review in a few minutes, with findings on changed lines as inline comments. It follows your <code>REVIEW.md</code> and <code>AGENTS.md</code> from the base branch when you have them. The receipt is saved as the run's <code>private-review-receipt.json</code> artifact, ready to drop into the checker below.</p>
+          <h3>Check it, then open a pull request</h3>
+          <p class="muted">On the repository's Actions tab, run <code>private-review</code> by hand: it checks the key, the model and the permissions without reading any code, and says what to fix. Then the review appears on each pull request in a few minutes, with findings on changed lines as inline comments. It follows your <code>REVIEW.md</code> and <code>AGENTS.md</code> from the base branch when you have them. The receipt is saved as the run's <code>private-review-receipt.json</code> artifact, ready to drop into the checker below.</p>
         </li>
       </ol>
     </section>
@@ -142,11 +153,22 @@
           <p>Drop a <code>private-review-receipt.json</code> here, or</p>
           <div class="actions">
             <label class="button">Choose a file <input type="file" id="receipt-file" accept=".json,application/json" hidden></label>
-            <button type="button" class="button primary arrow" id="check-sample">Check the sample receipt</button>
+            <button type="button" class="button primary" id="check-sample">Check the sample receipt</button>
           </div>
         </div>
       </div>
       <div id="check-result" class="card result" hidden aria-live="polite"></div>
+    </section>
+
+    <section aria-labelledby="seen">
+      <div class="section-head">
+        <h2 id="seen">What the App's operators can see</h2>
+        <p>Never your code or its review. This much, and no more:</p>
+      </div>
+      <ul class="limits">
+        <li><h3>Event notices</h3><p class="muted">GitHub sends its notices of pull request events (titles, descriptions, who pushed) to our relay, which forwards only ids to the enclave and keeps nothing. <a href="https://github.com/MultiAgency/private-ai/tree/main/relay">Its source</a> is public.</p></li>
+        <li><h3>Counts and timing</h3><p class="muted">How many reviews each installation runs (for the free tier), and when. OutLayer sees when each step runs and how large its requests are.</p></li>
+      </ul>
     </section>
 
     <section aria-labelledby="limits">
@@ -154,18 +176,20 @@
         <h2 id="limits">What it doesn't prove</h2>
         <p>Where the guarantees stop, so you can decide what else to check.</p>
       </div>
-      <ul class="limits grid two">
-        <li class="card"><h3>What happens on your runner</h3><p class="muted">The Action runs there. Read <a href="https://github.com/MultiAgency/private-ai/tree/main/review">its source</a>, pinned by commit in your workflow.</p></li>
-        <li class="card"><h3>Which model instance answered</h3><p class="muted">Instances share one signing key, so a signature proves that an attested enclave answered, not which one.</p></li>
-        <li class="card"><h3>What NEAR's images do</h3><p class="muted">The receipt records the compose hashes, and NEAR <a href="https://github.com/nearai/cvm-compose-files">publishes the files</a> they measure. Auditing those images is a separate step.</p></li>
-        <li class="card"><h3>That the review is right</h3><p class="muted">The proof covers where your code was read, not the quality of the findings. Measured on a real pull request, the private model missed two regressions in money paths that span files, which a frontier model caught (<a href="https://github.com/MultiAgency/private-ai#how-good-it-is">the evaluation</a>). Use it as a second reviewer, not as the sign-off on payment or permission code.</p></li>
+      <ul class="limits">
+        <li><h3>What happens on your runner</h3><p class="muted">The Action runs there. Read <a href="https://github.com/MultiAgency/private-ai/tree/main/review">its source</a>, pinned by commit in your workflow.</p></li>
+        <li><h3>That a build is its source</h3><p class="muted">The App's receipt names the build that read your code. Every release is recorded with its commit in <a href="https://github.com/MultiAgency/private-ai/blob/main/app/builds.json">app/builds.json</a>, and rebuilds bit for bit from it (CI checks this); rebuilding it yourself is the step that closes the loop.</p></li>
+        <li><h3>The enclaves' platforms</h3><p class="muted">The proofs rest on Intel TDX and NVIDIA confidential computing, and for the App on OutLayer's keystore and its approved worker builds.</p></li>
+        <li><h3>Which model instance answered</h3><p class="muted">Instances share one signing key, so a signature proves that an attested enclave answered, not which one.</p></li>
+        <li><h3>What NEAR's images do</h3><p class="muted">The receipt records the compose hashes, and NEAR <a href="https://github.com/nearai/cvm-compose-files">publishes the files</a> they measure. Auditing those images is a separate step.</p></li>
+        <li><h3>That the review is right</h3><p class="muted">The proof covers where your code was read, not the quality of the findings. Measured on a real pull request, the private model missed two regressions in money paths that span files, which a frontier model caught (<a href="https://github.com/MultiAgency/private-ai#how-good-it-is">the evaluation</a>). Use it as a second reviewer, not as the sign-off on payment or permission code.</p></li>
       </ul>
     </section>
   </main>
 
   <footer>
     <div class="container">
-      <span>MultiAgency · built on <a href="https://docs.near.ai/cloud/private-inference">NEAR AI Cloud private inference</a></span>
+      <span>MultiAgency · built on <a href="https://docs.near.ai/cloud/private-inference">NEAR AI Cloud private inference</a> and <a href="https://outlayer.ai">OutLayer</a></span>
       <nav>
         <a href="https://multiagency.ai">multiagency.ai</a>
         <a href="https://github.com/MultiAgency/private-ai">GitHub</a>

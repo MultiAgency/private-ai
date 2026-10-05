@@ -1,0 +1,15 @@
+# The hosted reviewer, built for OutLayer (wasm32-wasip2). OutLayer builds the
+# Cargo project at the repository root, so the workspace lives here; the
+# Action and the page stay in Node (core/, review/, site/).
+[workspace]
+members = ["app"]
+resolver = "2"
+
+# Size first: every OutLayer run downloads this build, and FastFS takes it in
+# 1 MB chunks (2.89 MB at "s"; 2.21 MB with these).
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

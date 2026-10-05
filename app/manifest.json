@@ -1,0 +1,30 @@
+{
+  "connector_id": "private-investigator",
+  "display": {
+    "name": "Private Investigator",
+    "author": "MultiAgency"
+  },
+  "operations": [
+    "status",
+    "review_start",
+    "review_step"
+  ],
+  "capabilities": {
+    "network": [
+      "api.github.com",
+      "codeload.github.com",
+      "cloud-api.near.ai",
+      "nras.attestation.nvidia.com",
+      "pccs.phala.network"
+    ]
+  },
+  "callers": {
+    "direct": "deny",
+    "contract": "deny",
+    "https": "allow"
+  },
+  "author_secrets": {
+    "owner": "hack.near",
+    "profile": "private-investigator"
+  }
+}
