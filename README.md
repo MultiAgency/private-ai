@@ -41,7 +41,8 @@ request and response bytes checks out. If any check fails, the run stops.
   public so anyone can read what it does. The App runs in an attested OutLayer
   enclave whose receipt names the exact build; each release is recorded with
   its commit in [`app/builds.json`](app/builds.json) and rebuilds bit for bit
-  from it (`app/verify-builds.sh`, run by CI).
+  from it in a pinned container (`app/build.sh`, with Docker; CI checks every
+  release with `app/verify-builds.sh`).
 - **Which model instance answered.** Instances of a model share one signing
   key, so the signature proves an attested enclave answered, not which one
   (see NEAR's [verification notes](https://docs.near.ai/cloud/verification/cloud-api/model-attestations)).

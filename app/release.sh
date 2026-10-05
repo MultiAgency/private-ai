@@ -18,7 +18,7 @@ PROJECT=${2:-private-investigator}
 PROFILE=private-investigator
 cd "$(dirname "$0")/.."
 
-SOURCE="app/src app/Cargo.toml app/manifest.json Cargo.toml Cargo.lock rust-toolchain.toml review/review.json"
+SOURCE="app/build.sh app/src app/Cargo.toml app/manifest.json Cargo.toml Cargo.lock rust-toolchain.toml review/review.json"
 DIRTY=$(git status --porcelain -- $SOURCE)
 if [ -n "$DIRTY" ] && [ "$ALLOW_DIRTY" = no ]; then
   echo "uncommitted source; commit it first, or pass --allow-dirty:" >&2
@@ -26,7 +26,7 @@ if [ -n "$DIRTY" ] && [ "$ALLOW_DIRTY" = no ]; then
   exit 1
 fi
 HASH=$(app/build.sh)
-WASM=target/wasm32-wasip2/release/private-investigator.wasm
+WASM=target/repro/wasm32-wasip2/release/private-investigator.wasm
 grep -q outlayer.manifest "$WASM" || { echo "the build has no outlayer.manifest section" >&2; exit 1; }
 echo "build $HASH"
 

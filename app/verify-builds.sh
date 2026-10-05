@@ -6,7 +6,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 [ -f app/builds.json ] || { echo "no releases recorded"; exit 0; }
-SOURCE="app/src app/Cargo.toml app/manifest.json Cargo.toml Cargo.lock rust-toolchain.toml review/review.json"
+SOURCE="app/build.sh app/src app/Cargo.toml app/manifest.json Cargo.toml Cargo.lock rust-toolchain.toml review/review.json"
 HASH=$(app/build.sh)
 echo "this commit builds $HASH"
 checked=0

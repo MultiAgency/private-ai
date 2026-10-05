@@ -6,5 +6,13 @@
     "project": "hack.near/private-investigator",
     "released_at": "2026-10-05T13:17:00Z",
     "note": "Released from uncommitted changes on this commit, before releases were recorded; not reproducible from any commit."
+  },
+  {
+    "hash": "202fd920a126736025a1ccc7b50cb687c1f89ff182a4a242809f8d09403bfaf3",
+    "commit": "524a6b7160ae4f52ac786527d303f4f8d62d9342",
+    "clean": false,
+    "project": "hack.near/private-investigator",
+    "released_at": "2026-10-05T16:28:13.482Z",
+    "note": "Built from this commit natively on macOS (aarch64): it rebuilds only on that host, since the same source builds different bytes on different hosts. Releases from then on build in app/build.sh's pinned container."
   }
 ]
