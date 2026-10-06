@@ -88,4 +88,7 @@ impl Run for RunClock {
     fn project(&self) -> Option<String> {
         std::env::var("OUTLAYER_PROJECT_ID").ok().filter(|v| !v.is_empty())
     }
+    fn memory_bytes(&self) -> Option<usize> {
+        std::env::var("NEAR_MAX_MEMORY_MB").ok()?.parse::<usize>().ok().map(|mb| mb << 20)
+    }
 }

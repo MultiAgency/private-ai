@@ -69,3 +69,11 @@ pub fn sorted(value: &serde_json::Value) -> serde_json::Value {
         other => other.clone(),
     }
 }
+
+/// The account whose secrets a build reads (manifest.json `author_secrets.owner`).
+/// Only it may open reviews: they run on its NEAR AI key, and it is the
+/// owner of the relay's payment key, so OutLayer names it as the relay's caller.
+pub fn secret_owner(manifest: &[u8]) -> Option<String> {
+    let manifest: serde_json::Value = serde_json::from_slice(manifest).ok()?;
+    manifest["author_secrets"]["owner"].as_str().filter(|o| !o.is_empty()).map(String::from)
+}

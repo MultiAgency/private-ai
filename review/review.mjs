@@ -105,9 +105,12 @@ ${earlier.map(f => `- \`${f.path}\`: ${f.body}`).join("\n")}` : ""}`;
 }
 
 // The product's name heads every review. Reviews posted before it had a name
-// began "**Private review**", and still count as this reviewer's own.
+// began "**Private review**", and still count as this reviewer's own. Only
+// this reviewer's own accounts post them (spec.authors): a heading alone is
+// something anyone can type.
 export const NAME = spec.name;
-export const isOurReview = body => [`**${NAME}**`, ...spec.legacy_headings].some(heading => body?.startsWith(heading));
+export const isOurReview = review => spec.authors.includes(review.user?.login)
+  && [`**${NAME}**`, ...spec.legacy_headings].some(heading => review.body?.startsWith(heading));
 
 /**
  * This reviewer's own earlier inline findings on the pull request, from the
@@ -115,7 +118,7 @@ export const isOurReview = body => [`**${NAME}**`, ...spec.legacy_headings].some
  * report what is new instead of repeating itself on every push.
  */
 export async function earlierFindings(gh, number) {
-  const ours = new Set((await gh.reviews(number)).filter(r => isOurReview(r.body)).map(r => r.id));
+  const ours = new Set((await gh.reviews(number)).filter(isOurReview).map(r => r.id));
   if (ours.size === 0) return [];
   const seen = new Set();
   return (await gh.reviewComments(number))
@@ -293,7 +296,7 @@ async function main() {
     await gh.review(number, { commit_id: pr.head.sha, event: "COMMENT", ...posted });
     console.log(`posted: ${posted.comments.length} inline comments`);
   } catch (error) {
-    if (!dryRun) await gh.comment(number, `**Private review stopped:** ${error.message}. No code was posted anywhere else. Re-run the job to try again; if it keeps stopping, the run's log names the step.`).catch(() => {});
+    if (!dryRun) await gh.comment(number, `**${NAME} stopped:** ${error.message}. No code was posted anywhere else. Re-run the job to try again; if it keeps stopping, the run's log names the step.`).catch(() => {});
     throw error;
   }
 }

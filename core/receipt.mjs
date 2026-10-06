@@ -40,7 +40,7 @@ export function receipt({ subject, model, evidence, turns }) {
  */
 export function provenClaims({ model: modelName, attestation: { model, gateway }, turns, runs }) {
   return [
-    ...(runs ? [["Reader", `Fetched from GitHub and read only by Private Investigator's published build ${runs.builds.map(b => `\`${b}\``).join(", ")}, in attested OutLayer enclaves: ${runs.steps.length} runs, each an approved worker build whose attestation binds what it returned.`]] : []),
+    ...(runs ? [["Reader", `Fetched from GitHub and read only by Private Investigator's published build ${runs.builds.map(b => `\`${b.hash}\`${b.clean ? `, built from commit \`${b.commit}\`` : ""}`).join("; ")}, in attested OutLayer enclaves: ${runs.steps.length} runs, each an approved worker build whose attestation binds what it returned.`]] : []),
     ["Model", `\`${modelName}\` in an Intel TDX enclave with NVIDIA confidential GPUs. Quote verified, TCB ${model.tcb}${model.tcb === "UpToDate" ? "" : " (an Intel platform update is pending, which this repository's policy allows for the model)"}, debug off; it binds signing key \`${model.signer}\` and this run's nonce. Compose hash \`${model.composeHash}\`.`],
     ["GPUs", "NVIDIA's signed verdict approves them for the same nonce."],
     ["Gateway", `Quote verified, TCB ${gateway.tcb}${gateway.tcb === "UpToDate" ? "" : " (an Intel platform update is pending, which the check allows for the gateway only)"}. It relayed only end-to-end encrypted content.`],
@@ -70,6 +70,9 @@ export async function verifyReceipt(text, options = {}) {
     allowUnpatchedModel: receipt.policy?.allow_unpatched_model === true,
   });
   if (!receipt.turns?.length) throw new Error("no signed turns");
+  // Each request is encrypted afresh, so no two turns share their hashes: a
+  // repeat would only inflate the count of signed responses.
+  if (new Set(receipt.turns.map(t => `${t.request_sha256}:${t.response_sha256}`)).size !== receipt.turns.length) throw new Error("a turn is listed twice");
   for (const turn of receipt.turns) {
     checkSignature(turn.signature, signedText(receipt.model, turn.request_sha256, turn.response_sha256), model.publicKey);
   }
@@ -83,13 +86,15 @@ export async function verifyReceipt(text, options = {}) {
 
 /**
  * The OutLayer side of a version 2 receipt: every run's attestation is fetched
- * by its call id and checked (an approved worker build, for this project, bound
- * to the run's output), and the outputs must prove the receipt's parts: one run
- * generated the nonce, the runs took exactly the receipt's turns in order, and
- * the last run attests this receipt's hash and subject commitment (its output
- * is rebuilt here, since it could not be listed in the receipt it hashes).
+ * by its call id and checked (an approved worker build, running one of the
+ * published builds of a published project, bound to the run's output), and
+ * the outputs must prove the receipt's parts: one run generated the nonce,
+ * the runs took exactly the receipt's turns, and the last run attests this
+ * receipt's hash and subject commitment (its output is rebuilt here, since it
+ * could not be listed in the receipt it hashes).
  */
 async function verifyRuns(receipt, receiptSha256, {
+  published,
   getRecord = stepRecord,
   approvedFor = async timestamp => approvedAt(await blockAt(timestamp)),
   checkStep = verifyStep,
@@ -97,6 +102,11 @@ async function verifyRuns(receipt, receiptSha256, {
 } = {}) {
   const { project, runs, findings } = receipt.outlayer ?? {};
   if (!project || !runs?.length) throw new Error("no OutLayer runs recorded");
+  // Whose runs these must be: a project and builds the checker already trusts
+  // (app/builds.json), never ones the receipt names for itself.
+  if (!published) throw new Error("no published builds to check the runs against");
+  const builds = published.filter(b => b.project === project);
+  if (!builds.length) throw new Error(`project ${project} is not one whose builds are published`);
   const listed = runs.slice(0, -1).map(r => r.output);
   const job = listed[0]?.job;
   if (!job || listed.some(o => o?.job !== job)) throw new Error("the runs are not one job");
@@ -123,12 +133,13 @@ async function verifyRuns(receipt, receiptSha256, {
     const record = await getRecord(run.call_id);
     steps.push(await checkStep(record, {
       project,
+      wasmHashes: builds.map(b => b.hash),
       output: outputs[i],
       approved: await approvedFor(record.timestamp),
       allowUnpatched: receipt.policy?.allow_unpatched_model === true,
       ...(verifyStepQuote && { verifyQuote: verifyStepQuote }),
     }));
   }
-  return { project, steps, builds: [...new Set(steps.map(s => s.wasmHash))] };
+  return { project, steps, builds: [...new Set(steps.map(s => s.wasmHash))].map(hash => builds.find(b => b.hash === hash)) };
 }
 

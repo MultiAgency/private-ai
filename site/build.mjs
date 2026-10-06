@@ -26,7 +26,7 @@ await build({
 // The subset of GitHub markdown the review uses: `code`, **bold**, [links](url).
 // Fences such as ```changes stay literal code rather than opening a span.
 function inline(text) {
-  const escaped = text.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+  const escaped = text.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
   const fences = [];
   return escaped
     .replace(/`{3}\w*/g, fence => `\u0000${fences.push(fence) - 1}\u0000`)

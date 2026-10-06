@@ -18,7 +18,7 @@ use serde_json::{json, Map, Value};
 use crate::agent::{Agent, Finish, Next};
 use crate::attest::{Attestation, Summary};
 use crate::receipt::{proven_claims, receipt_v2, subject_commitment, turn_hash, Evidence};
-use crate::repo::Repo;
+use crate::repo::{Repo, TOO_LARGE};
 use crate::review::{check_submission, commentable_lines, merge_findings, render_review, spec, system_prompt, user_prompt};
 use crate::store::{put, remove, take, Store};
 
@@ -27,8 +27,9 @@ use crate::store::{put, remove, take, Store};
 pub const HOSTED_REPLY_CAP: u64 = 4_096;
 /// Another turn starts only this early in a run.
 pub const NEW_TURN_BEFORE_SECS: u64 = 30;
-/// A turn whose run was killed is retried this many times before the job fails.
-pub const TURN_RETRIES: u64 = 2;
+/// A step whose run was killed (out of memory, or past the run's time limit)
+/// is retried this many times before the job fails.
+pub const STEP_RETRIES: u64 = 2;
 
 /// GitHub as one installation sees one repository.
 pub trait Forge {
@@ -58,6 +59,10 @@ pub trait Run {
     fn call_id(&self) -> Option<String>;
     /// The project this runs as (`owner/name`), where its receipts are published.
     fn project(&self) -> Option<String>;
+    /// The memory the run may use, when the host sets a limit.
+    fn memory_bytes(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// What the caller learns.
@@ -225,9 +230,12 @@ fn earlier_findings(forge: &dyn Forge, number: u64) -> Result<Vec<Value>> {
     let headings: Vec<String> = std::iter::once(format!("**{}**", spec()["name"].as_str().unwrap_or("")))
         .chain(spec()["legacy_headings"].as_array().into_iter().flatten().filter_map(|h| h.as_str().map(String::from)))
         .collect();
+    // Only this reviewer's own accounts post its reviews: a heading alone is something anyone can type.
+    let authors: Vec<&str> = spec()["authors"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
     let ours: Vec<u64> = forge
         .reviews(number)?
         .iter()
+        .filter(|r| r["user"]["login"].as_str().is_some_and(|login| authors.contains(&login)))
         .filter(|r| r["body"].as_str().is_some_and(|b| headings.iter().any(|h| b.starts_with(h.as_str()))))
         .filter_map(|r| r["id"].as_u64())
         .collect();
@@ -272,6 +280,14 @@ pub fn check_link(project: &str, sha: &str, salt: &str, subject: &Value) -> Stri
 pub fn step(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &dyn Run, job: &str) -> Result<Step> {
     let Some(mut state) = take(store, &key(job))? else { bail!("unknown job") };
     let number = state["number"].as_u64().unwrap_or(0);
+    // A run killed before it answered leaves this mark behind, wherever it
+    // stopped: fetching, attesting, or mid-turn. Progress clears it.
+    let strikes = state["in_flight"].as_u64().unwrap_or(0);
+    if strikes > STEP_RETRIES {
+        bail!("a step did not finish within a run");
+    }
+    state["in_flight"] = json!(strikes + 1);
+    put(store, &key(job), &state)?;
 
     // First step: gather, attest, set up the passes.
     if state["attestation"].is_null() {
@@ -302,6 +318,7 @@ pub fn step(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &dyn R
         // The nonce this run generated binds the evidence in the receipt to this run.
         let mut step = Step::plain(Outcome::More);
         step.attests.insert("nonce".into(), json!(evidence.nonce));
+        state["in_flight"] = json!(0);
         record_run(&mut state, run, job, &step);
         put(store, &key(job), &state)?;
         return Ok(step);
@@ -310,7 +327,11 @@ pub fn step(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &dyn R
     // Review steps: turns while the run is young.
     let mut taken: Vec<Value> = Vec::new();
     if state["results"].as_array().is_some_and(|r| r.iter().any(Value::is_null)) {
-        let tree = Repo::from_tarball(&forge.tarball(state["pr"]["head"]["sha"].as_str().unwrap_or(""))?).map_err(|_| anyhow!("the head commit could not be read"))?;
+        // The tree shares the run's memory with its tarball, the job's state and the model's replies.
+        let budget = run.memory_bytes().map_or(usize::MAX, |m| m / 4);
+        let tarball = forge.tarball(state["pr"]["head"]["sha"].as_str().unwrap_or(""))?;
+        let tree = Repo::from_tarball(&tarball, budget).map_err(|e| if e.to_string() == TOO_LARGE { anyhow!(TOO_LARGE) } else { anyhow!("the head commit could not be read") })?;
+        drop(tarball);
         let submit = spec()["submit_tool"].clone();
         let check = |args: &Value| check_submission(args);
         let finish = Finish { tool: &submit, check: &check };
@@ -319,14 +340,6 @@ pub fn step(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &dyn R
         let mut first = true;
         while first || run.elapsed() < NEW_TURN_BEFORE_SECS {
             let Some(i) = state["results"].as_array().and_then(|r| r.iter().position(Value::is_null)) else { break };
-            // A run killed mid-turn leaves this mark behind; the turn is retried, a few times.
-            let strikes = state["in_flight"].as_u64().unwrap_or(0);
-            if strikes > TURN_RETRIES {
-                bail!("a model turn did not finish within a run");
-            }
-            state["in_flight"] = json!(strikes + 1);
-            put(store, &key(job), &state)?;
-
             let mut agent = Agent::from_json(&state["agents"][i])?;
             let before = agent.turns.len();
             let next = model.turn(&mut agent, &model_name, &public_key, &Repo::definitions(), &finish, &mut |name, args| tree.call(name, args))?;
@@ -335,13 +348,15 @@ pub fn step(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &dyn R
             if let Next::Finished(result) = next {
                 state["results"][i] = result;
             }
-            state["in_flight"] = json!(0);
+            // A turn done: this run counts once more only if it dies before the next.
+            state["in_flight"] = json!(1);
             put(store, &key(job), &state)?;
             first = false;
         }
         if state["results"].as_array().is_some_and(|r| r.iter().any(Value::is_null)) {
             let mut step = Step::plain(Outcome::More);
             step.attests.insert("turns".into(), Value::Array(taken));
+            state["in_flight"] = json!(0);
             record_run(&mut state, run, job, &step);
             put(store, &key(job), &state)?;
             return Ok(step);
@@ -417,12 +432,15 @@ pub fn step(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &dyn R
     let commentable: Vec<String> = state["commentable"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(String::from)).collect();
     let link = check_link(&project, &sha, &salt, &subject);
     let posted = render_review(&review, &proof, &sha, None, Some(&link), &commentable);
-    forge.review(number, &json!({ "commit_id": pr["head"]["sha"], "event": "COMMENT", "body": posted["body"], "comments": posted["comments"] }))?;
+    // The check run closes first and the review is the last write: if posting
+    // fails, the job fails (and says so on the check run) with no review out,
+    // so a retried request reviews again; once posted, nothing is left to fail.
     forge.check_run(state["check_run"].as_u64(), &json!({
         "status": "completed", "conclusion": "neutral",
         "output": { "title": if tally == 0 { "Case closed: nothing to report".to_string() } else { format!("Case closed: {tally} lead{}", if tally == 1 { "" } else { "s" }) }, "summary": format!("Receipt sha256 `{sha}`: [check it]({link}).") },
     }))?;
-    remove(store, &key(job))?;
+    forge.review(number, &json!({ "commit_id": pr["head"]["sha"], "event": "COMMENT", "body": posted["body"], "comments": posted["comments"] }))?;
+    let _ = remove(store, &key(job));
     Ok(step)
 }
 
@@ -438,12 +456,14 @@ pub fn run_step(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &d
                 m if m.starts_with("GitHub") => "github",
                 m if m.starts_with("NEAR AI") || m.contains("signature") || m.contains("signed") => "model",
                 m if m.starts_with("nothing submitted") => "no submission",
-                m if m.contains("did not finish within a run") => "turn too long",
+                m if m.contains("did not finish within a run") => "run cut off",
+                TOO_LARGE => "too large",
                 _ => "internal",
             };
             if let Ok(Some(state)) = take(store, &key(job)) {
                 let text = match category {
                     "attestation" => "Attestation failed, so no code was sent to the model.",
+                    "too large" => "The repository is too large to review within one run's memory. No code left the enclave.",
                     _ => "The review stopped before it finished. No code left the enclave.",
                 };
                 if let Some(check) = state["check_run"].as_u64() {

@@ -2,6 +2,7 @@
 // repository; the receipt checker runs core/receipt.mjs, the same checks as
 // `node core/verify.mjs`, in the browser.
 import { provenClaims, verifyReceipt } from "../core/receipt.mjs";
+import published from "../app/builds.json" with { type: "json" };
 
 const $ = selector => document.querySelector(selector);
 const escape = text => String(text).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
@@ -130,7 +131,7 @@ const result = $("#check-result");
 
 /** A receipt's verified claims, or the reason it isn't verified (thrown). */
 async function verify(text, options = {}) {
-  const { receipt, sha256, gateway, model, runs, subjectConfirmed } = await verifyReceipt(text, options);
+  const { receipt, sha256, gateway, model, runs, subjectConfirmed } = await verifyReceipt(text, { ...options, published });
   const claims = provenClaims({ model: receipt.model, attestation: { model, gateway }, turns: receipt.turns.length, runs });
   return { receipt, sha256, claims, subject: subjectConfirmed ? options.subject : receipt.subject };
 }

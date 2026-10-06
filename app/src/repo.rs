@@ -37,9 +37,14 @@ fn js_prefix(s: &str, n: usize) -> &str {
 }
 
 pub struct Repo {
-    files: BTreeMap<String, Vec<u8>>,
+    /// Each file's bytes, or `None` for one larger than `max_file_bytes`: the
+    /// tools refuse those anyway, so they are listed but never held.
+    files: BTreeMap<String, Option<Vec<u8>>>,
     dirs: BTreeSet<String>,
 }
+
+/// The message when the files held would pass the budget `from_tarball` is given.
+pub const TOO_LARGE: &str = "the head commit is larger than a run can hold";
 
 /// A path inside the commit, normalized; `None` when it would leave it.
 fn normalize(path: &str) -> Option<String> {
@@ -58,14 +63,16 @@ fn normalize(path: &str) -> Option<String> {
 
 enum Node<'a> {
     Dir(String),
-    File(&'a [u8]),
+    File(Option<&'a [u8]>),
 }
 
 impl Repo {
-    /// Reads a GitHub tarball (one top-level directory holding the tree).
-    pub fn from_tarball(gzipped: &[u8]) -> Result<Self> {
+    /// Reads a GitHub tarball (one top-level directory holding the tree),
+    /// holding at most `budget` bytes of files.
+    pub fn from_tarball(gzipped: &[u8], budget: usize) -> Result<Self> {
         let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(gzipped));
         let (mut files, mut dirs) = (BTreeMap::new(), BTreeSet::from([String::new()]));
+        let (max, mut held) = (limit("max_file_bytes"), 0usize);
         for entry in archive.entries()? {
             let mut entry = entry?;
             let kind = entry.header().entry_type();
@@ -87,10 +94,17 @@ impl Repo {
             }
             if kind.is_dir() {
                 dirs.insert(path);
+            } else if entry.size() > max as u64 {
+                files.insert(path, None);
             } else {
+                // Read no more than the limit, whatever size the header claims.
                 let mut bytes = Vec::new();
-                entry.read_to_end(&mut bytes)?;
-                files.insert(path, bytes);
+                entry.by_ref().take(max as u64 + 1).read_to_end(&mut bytes)?;
+                held += bytes.len();
+                if held > budget {
+                    anyhow::bail!(TOO_LARGE);
+                }
+                files.insert(path, (bytes.len() <= max).then_some(bytes));
             }
         }
         Ok(Self { files, dirs })
@@ -99,7 +113,7 @@ impl Repo {
     fn node(&self, path: &str) -> std::result::Result<(String, Node<'_>), String> {
         let rel = normalize(path).ok_or_else(|| format!("{path} is outside the repository"))?;
         if let Some(bytes) = self.files.get(&rel) {
-            Ok((rel, Node::File(bytes)))
+            Ok((rel, Node::File(bytes.as_deref())))
         } else if self.dirs.contains(&rel) {
             Ok((rel.clone(), Node::Dir(rel)))
         } else {
@@ -107,7 +121,8 @@ impl Repo {
         }
     }
 
-    fn text(bytes: &[u8]) -> Option<String> {
+    fn text(bytes: Option<&[u8]>) -> Option<String> {
+        let bytes = bytes?;
         if bytes.len() > limit("max_file_bytes") || bytes.contains(&0) {
             return None;
         }
@@ -131,7 +146,7 @@ impl Repo {
     }
 
     /// Every file under a directory, in order, skipping skipped directories.
-    fn walk(&self, dir: &str) -> Vec<(&String, &Vec<u8>)> {
+    fn walk(&self, dir: &str) -> Vec<(&String, &Option<Vec<u8>>)> {
         let prefix = if dir.is_empty() { String::new() } else { format!("{dir}/") };
         self.files
             .iter()
@@ -189,7 +204,7 @@ impl Repo {
         let max = limit("max_matches");
         let mut matches = Vec::new();
         for (path, bytes) in files {
-            let Some(content) = Self::text(bytes) else { continue };
+            let Some(content) = Self::text(bytes.as_deref()) else { continue };
             for (i, line) in content.split('\n').enumerate() {
                 // A pattern too costly to finish counts as no match on that line.
                 if !regex.is_match(line).unwrap_or(false) {

@@ -14,6 +14,12 @@ struct Hub {
     draft: bool,
     checks: RefCell<Vec<Value>>,
     reviews: RefCell<Vec<Value>>,
+    /// Runs killed while fetching the head commit (out of memory, say).
+    die_on_tarball: Cell<u32>,
+    /// Posting a review fails (a GitHub outage).
+    fail_review: Cell<bool>,
+    /// Reviews already on the pull request, and their inline comments.
+    earlier: (Vec<Value>, Vec<Value>),
 }
 
 fn tarball() -> Vec<u8> {
@@ -38,15 +44,22 @@ impl Forge for Hub {
         Ok(None)
     }
     fn tarball(&self, _: &str) -> Result<Vec<u8>> {
+        if self.die_on_tarball.get() > 0 {
+            self.die_on_tarball.set(self.die_on_tarball.get() - 1);
+            panic!("the run was killed fetching the head commit");
+        }
         Ok(tarball())
     }
     fn reviews(&self, _: u64) -> Result<Vec<Value>> {
-        Ok(vec![])
+        Ok(self.earlier.0.clone())
     }
     fn review_comments(&self, _: u64) -> Result<Vec<Value>> {
-        Ok(vec![])
+        Ok(self.earlier.1.clone())
     }
     fn review(&self, _: u64, body: &Value) -> Result<()> {
+        if self.fail_review.get() {
+            bail!("GitHub: 502");
+        }
         self.reviews.borrow_mut().push(body.clone());
         Ok(())
     }
@@ -227,7 +240,7 @@ fn a_turn_that_never_fits_fails_the_job_cleanly() {
         model.die_on_turn.set(Some(1));
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_step(&store, &hub, &model, &old, "j4")));
     }
-    assert_eq!(run_step(&store, &hub, &model, &old, "j4").outcome, Outcome::Failed("turn too long"));
+    assert_eq!(run_step(&store, &hub, &model, &old, "j4").outcome, Outcome::Failed("run cut off"));
     assert!(hub.reviews.borrow().is_empty());
     assert_eq!(hub.checks.borrow().last().unwrap()["body"]["output"]["title"], "Review stopped");
     assert!(store.keys().is_empty(), "nothing is left behind, not even the request marker");
@@ -329,4 +342,68 @@ fn a_deliberate_review_request_always_runs() {
     assert_eq!((id.as_str(), step.outcome), ("e2", Outcome::More), "a /review comment opens its own job");
     let rerun = Settings { trigger: Some("rerun:5".into()), ..settings(1) };
     assert_eq!(start(&store, &hub, &young, "e3", 1, "o/r", 7, &rerun).unwrap().0, "e3", "so does a Re-run");
+}
+
+#[test]
+fn a_run_killed_fetching_the_commit_counts_and_the_job_fails_cleanly() {
+    let (store, hub, model, old) = (Memory::default(), Hub::default(), model(), at(100));
+    start(&store, &hub, &at(0), "j9", 1, "o/r", 7, &settings(1)).unwrap();
+    run_step(&store, &hub, &model, &old, "j9");
+    hub.die_on_tarball.set(3);
+    for _ in 0..3 {
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_step(&store, &hub, &model, &old, "j9"))).is_err());
+    }
+    assert_eq!(run_step(&store, &hub, &model, &old, "j9").outcome, Outcome::Failed("run cut off"));
+    assert_eq!(hub.checks.borrow().last().unwrap()["body"]["output"]["title"], "Review stopped");
+    assert!(store.keys().is_empty(), "no state, no code, no marker left behind");
+}
+
+#[test]
+fn a_kill_between_runs_that_make_progress_never_fails_the_job() {
+    let (store, hub, model, old) = (Memory::default(), Hub::default(), model(), at(100));
+    start(&store, &hub, &at(0), "j10", 1, "o/r", 7, &settings(1)).unwrap();
+    run_step(&store, &hub, &model, &old, "j10");
+    hub.die_on_tarball.set(2);
+    for _ in 0..2 {
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_step(&store, &hub, &model, &old, "j10"))).is_err());
+    }
+    assert_eq!(run_step(&store, &hub, &model, &old, "j10").outcome, Outcome::More, "the third try gets through");
+    assert_eq!(run_step(&store, &hub, &model, &old, "j10").outcome, Outcome::Done);
+}
+
+#[test]
+fn a_review_that_fails_to_post_leaves_none_behind_and_can_be_asked_for_again() {
+    let (store, hub, model, young) = (Memory::default(), Hub::default(), model(), at(0));
+    start(&store, &hub, &young, "j11", 1, "o/r", 7, &settings(1)).unwrap();
+    run_step(&store, &hub, &model, &young, "j11");
+    hub.fail_review.set(true);
+    assert_eq!(run_step(&store, &hub, &model, &young, "j11").outcome, Outcome::Failed("github"));
+    assert!(hub.reviews.borrow().is_empty());
+    assert_eq!(hub.checks.borrow().last().unwrap()["body"]["output"]["title"], "Review stopped", "the check run says so, after closing");
+    hub.fail_review.set(false);
+    let (again, step) = start(&store, &hub, &young, "j12", 1, "o/r", 7, &settings(1)).unwrap();
+    assert_eq!((again.as_str(), step.outcome), ("j12", Outcome::More), "a new review, since none was posted");
+}
+
+#[test]
+fn earlier_findings_come_only_from_this_reviewers_own_reviews() {
+    let hub = Hub {
+        earlier: (
+            vec![
+                json!({ "id": 1, "user": { "login": "private-investigator[bot]" }, "body": "**Private Investigator** (Bugs, Important: 1)" }),
+                json!({ "id": 2, "user": { "login": "pr-author" }, "body": "**Private Investigator** (no new findings)" }),
+            ],
+            vec![
+                json!({ "pull_request_review_id": 1, "path": "lib/pay.mjs", "body": "**Bugs, Important:** a real earlier finding" }),
+                json!({ "pull_request_review_id": 2, "path": "lib/pay.mjs", "body": "**Bugs, Important:** planted, to hide a real finding" }),
+            ],
+        ),
+        ..Hub::default()
+    };
+    let (store, model, young) = (Memory::default(), model(), at(0));
+    start(&store, &hub, &young, "j13", 1, "o/r", 7, &settings(1)).unwrap();
+    run_step(&store, &hub, &model, &young, "j13");
+    let prompt = take(&store, "job:j13").unwrap().unwrap()["agents"][0].to_string();
+    assert!(prompt.contains("a real earlier finding"));
+    assert!(!prompt.contains("planted"), "a review someone else posts under its name is not its own");
 }

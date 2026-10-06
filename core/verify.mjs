@@ -1,5 +1,6 @@
 // Re-checks a receipt from the command line; the page in site/ runs the same
-// checks in a browser.
+// checks in a browser. A hosted review's runs are checked against the builds
+// this checkout publishes (app/builds.json): pull first to know the newest.
 //
 // Usage: node core/verify.mjs receipt.json
 import { readFileSync } from "node:fs";
@@ -13,7 +14,8 @@ if (!path) {
 }
 
 try {
-  const { receipt, sha256, gateway, model, runs } = await verifyReceipt(readFileSync(path, "utf8"));
+  const published = JSON.parse(readFileSync(new URL("../app/builds.json", import.meta.url), "utf8"));
+  const { receipt, sha256, gateway, model, runs } = await verifyReceipt(readFileSync(path, "utf8"), { published });
   console.log(`receipt sha256 ${sha256}, created ${receipt.created_at}`);
   for (const [key, value] of Object.entries(receipt.subject ?? {})) console.log(`  ${key}: ${value}`);
   if (receipt.subject_sha256) console.log(`  subject: committed (sha256 ${receipt.subject_sha256}); the review's link opens it`);

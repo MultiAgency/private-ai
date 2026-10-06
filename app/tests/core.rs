@@ -324,6 +324,13 @@ fn a_streamed_reply_opens_fragment_by_fragment_with_tool_calls_joined_by_index()
     assert_eq!(reply.message["tool_calls"][0]["function"]["arguments"], "{\"path\": \"a.js\"}");
     assert_eq!(reply.message["tool_calls"][1]["id"], "call_b");
     assert_eq!(reply.usage.unwrap()["total_tokens"], 9);
+
+    // The index arrives unsigned: a huge one is a gap, as in the Action, not a crash or a huge allocation.
+    let far = session
+        .decrypt_stream(&[delta(json!({ "tool_calls": [{ "index": u64::MAX, "id": "call_z", "type": "function", "function": { "name": e("grep") } }] }))])
+        .unwrap();
+    assert_eq!(far.message["tool_calls"].as_array().unwrap().len(), 1);
+    assert_eq!(far.message["tool_calls"][0]["id"], "call_z");
 }
 
 #[test]
@@ -356,4 +363,11 @@ fn turn_hashes_and_subject_commitments_match_the_js_checker() {
     assert_eq!(turn_hash(&receipt()["turns"][0]), "3ee9d41764acc01a67aee289edc62ecd43f16231ca972123f473b6c3eeaeebc9");
     let subject = json!({ "pull_request": "owner/secret-repo#7", "base_sha": "a".repeat(40), "head_sha": "b".repeat(40) });
     assert_eq!(subject_commitment("00112233445566778899aabbccddeeff", &subject), "1713fd61b577b8dbe92fc4de33840d7f7d1c494908b33737395fc21ec322dc28");
+}
+
+#[test]
+fn only_the_secret_owner_opens_reviews() {
+    assert_eq!(private_investigator::secret_owner(include_bytes!("../manifest.json")).as_deref(), Some("hack.near"));
+    assert_eq!(private_investigator::secret_owner(br#"{"author_secrets": {"owner": ""}}"#), None);
+    assert_eq!(private_investigator::secret_owner(b"not json"), None);
 }

@@ -92,15 +92,6 @@ export function session(modelPublicKeyHex) {
       if (calls.length) message.tool_calls = calls.filter(Boolean);
       return { id: events[0]?.id, message, finishReason, usage };
     },
-
-    decryptMessage(message) {
-      const plain = { ...message };
-      for (const field of ["content", "reasoning_content", "reasoning", "refusal"]) {
-        if (message[field]) plain[field] = decrypt(message[field]);
-      }
-      if (message.tool_calls) plain.tool_calls = message.tool_calls.map(c => encryptCall(c, decrypt));
-      return plain;
-    },
   };
 }
 

@@ -39,7 +39,8 @@ same review the App and the Action run:
 - **Planted bugs** (a dropped auth check, an off-by-one, an XSS sink, a logged
   secret, a cross-file break, a swallowed error, a race): the App and the
   Action each caught every one, in 4 runs of 4. These cases live in a private
-  repository for now.
+  repository for now, and the App's runs used a longer reply limit than the
+  hosted App's 4,096 tokens; the eval now runs it as hosted.
 - **False positives:** none, in 8 runs on a clean pull request and on one
   where an earlier review raised a known false positive.
 - **Real bugs:** it misses regressions that span files in money and permission
@@ -72,12 +73,17 @@ while the free tier's monthly pool lasts.
   receipt does not name your repository; the link opens and checks it.
 - **What its operators can see:** GitHub's event notices (titles,
   descriptions, who pushed) pass through the relay, which forwards only ids and
-  keeps nothing, plus review counts per installation and when steps run.
-  Never code, never the review.
+  holds them only while a review runs, plus review counts per installation and
+  when steps run. Never code, never the review.
 - **What it keeps:** a review's working state is sealed in the enclave's
   storage and deleted when the review finishes or fails. What stays is the
-  review on your pull request, the public receipt, and the monthly count for
-  your installation. Uninstalling stops reviews; nothing else holds your code.
+  review on your pull request, the public receipt (with its count of new
+  findings), the monthly count for your installation, and a sealed marker per
+  request (a hash of its ids, and when it ran) that stops a repeated delivery
+  from reviewing twice. Uninstalling stops reviews; nothing else holds your code.
+- **Who can start a review:** GitHub's events, through our relay. A `/review`
+  needs write access to the repository; the relay drops one from someone with
+  no history there, and the enclave checks the rest on GitHub.
 
 ### The GitHub Action (your own runner, your own key)
 
@@ -106,7 +112,9 @@ jobs:
 ```
 
 The receipt is uploaded as the run's `private-review-receipt.json` artifact,
-which downloads as that file, ready for the page's checker.
+which downloads as that file, ready for the page's checker. It names the pull
+request and commits it reviewed; what ties it to the review is the hash the
+review quotes, so check that the two match.
 
 **Forks.** Pull requests from forks get no secrets, so a `/review` comment
 starts their review, from someone with write access to the repository. Put
@@ -175,16 +183,21 @@ request and response bytes checks out. If any check fails, the run stops.
 - **What happens on the machine that runs the service.** The Action runs on
   the client's own runner, which already has their code; this repository is
   public so anyone can read what it does. The App runs in an attested OutLayer
-  enclave whose receipt names the exact build; each release is recorded with
-  its commit in [`app/builds.json`](app/builds.json) and rebuilds bit for bit
-  from it in a pinned container (`app/build.sh`, with Docker; CI checks every
-  release with `app/verify-builds.sh`).
+  enclave whose receipt names the exact build. Each release is recorded with
+  its commit in [`app/builds.json`](app/builds.json) before it runs, and the
+  checker accepts only recorded builds of our project. A recorded build
+  rebuilds bit for bit from its commit in a pinned container (`app/build.sh`,
+  with Docker), and CI rebuilds each one when it is recorded
+  (`app/verify-builds.sh`).
 - **Which model instance answered.** Instances of a model share one signing
   key, so the signature proves an attested enclave answered, not which one
   (see NEAR's [verification notes](https://docs.near.ai/cloud/verification/cloud-api/model-attestations)).
-- **What NEAR's images do.** The receipt records the compose hashes, and
-  NEAR publishes the [compose files](https://github.com/nearai/cvm-compose-files)
-  they measure. Auditing those images is a separate step.
+- **Which image the model enclave runs, and what it does.** The check proves a
+  production Intel TDX enclave holds the signing key, and shows its compose
+  hash; it does not compare its measurements with NEAR's published
+  [compose files](https://github.com/nearai/cvm-compose-files), and auditing
+  those images is a separate step. NVIDIA's verdict is tied to that enclave
+  by the shared nonce, not by the quote itself.
 
 ### Verify a receipt
 

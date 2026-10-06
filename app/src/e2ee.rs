@@ -130,7 +130,9 @@ impl Session {
         message.insert("role".into(), json!("assistant"));
         message.insert("content".into(), json!(""));
         message.insert("reasoning_content".into(), json!(""));
-        let mut calls: Vec<Option<Value>> = Vec::new();
+        // Keyed by the stream's index, which arrives unsigned: a map, as the
+        // Action's sparse array, so no index can force a huge allocation.
+        let mut calls: std::collections::BTreeMap<u64, Value> = std::collections::BTreeMap::new();
         let (mut finish_reason, mut usage) = (None, None);
         for event in events {
             if !event["usage"].is_null() {
@@ -148,11 +150,7 @@ impl Session {
                 }
             }
             for part in delta["tool_calls"].as_array().into_iter().flatten() {
-                let index = part["index"].as_u64().unwrap_or(0) as usize;
-                if calls.len() <= index {
-                    calls.resize(index + 1, None);
-                }
-                let call = calls[index].get_or_insert_with(|| json!({ "id": "", "type": "function", "function": { "name": "", "arguments": "" } }));
+                let call = calls.entry(part["index"].as_u64().unwrap_or(0)).or_insert_with(|| json!({ "id": "", "type": "function", "function": { "name": "", "arguments": "" } }));
                 if let Some(id) = part["id"].as_str().filter(|s| !s.is_empty()) {
                     call["id"] = json!(id);
                 }
@@ -164,7 +162,7 @@ impl Session {
                 }
             }
         }
-        let calls: Vec<Value> = calls.into_iter().flatten().collect();
+        let calls: Vec<Value> = calls.into_values().collect();
         if !calls.is_empty() {
             message.insert("tool_calls".into(), Value::Array(calls));
         }
@@ -174,19 +172,6 @@ impl Session {
             finish_reason,
             usage,
         })
-    }
-
-    pub fn decrypt_message(&self, message: &Value) -> Result<Value> {
-        let mut plain = message.clone();
-        for field in TEXT_FIELDS {
-            if let Some(text) = message[field].as_str().filter(|s| !s.is_empty()) {
-                plain[field] = json!(open(text, &self.client_x25519)?);
-            }
-        }
-        if let Some(calls) = message["tool_calls"].as_array() {
-            plain["tool_calls"] = Value::Array(calls.iter().map(|c| transform_call(c, |s| open(s, &self.client_x25519))).collect::<Result<_>>()?);
-        }
-        Ok(plain)
     }
 }
 

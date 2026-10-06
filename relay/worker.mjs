@@ -10,10 +10,9 @@
 // (micro-USD per call).
 import { DurableObject } from "cloudflare:workers";
 
-import { eventInput, reviewRequest, signedByGitHub } from "./relay.mjs";
+import { enqueued, eventInput, reviewRequest, settled, signedByGitHub } from "./relay.mjs";
 
 const OUTLAYER = "https://api.outlayer.ai/call";
-const RETRIES = 3;
 
 export default {
   async fetch(request, env) {
@@ -41,38 +40,34 @@ export default {
 export class Reviews extends DurableObject {
   /** Queues an OutLayer input and wakes the driver. */
   async enqueue(input) {
-    const queue = (await this.ctx.storage.get("queue")) ?? [];
-    queue.push({ input, tries: 0 });
+    const queue = enqueued((await this.ctx.storage.get("queue")) ?? [], input);
+    if (!queue) return console.log("a pull request's queue is full; a request was dropped");
     await this.ctx.storage.put("queue", queue);
     if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now());
   }
 
-  /** One OutLayer call per alarm: the next input in the queue. */
+  /** One OutLayer call per alarm: the queue's head. */
   async alarm() {
-    const queue = (await this.ctx.storage.get("queue")) ?? [];
-    const item = queue.shift();
-    if (!item) return;
-    let output;
+    const head = ((await this.ctx.storage.get("queue")) ?? [])[0];
+    if (!head) return;
+    let result;
     try {
       const response = await fetch(`${OUTLAYER}/${this.env.OUTLAYER_PROJECT}`, {
         method: "POST",
         // A step can run 150 s and more; OutLayer's default ceiling is $0.01.
         headers: { "x-payment-key": this.env.PAYMENT_KEY, "x-compute-limit": this.env.COMPUTE_LIMIT, "content-type": "application/json" },
         // OutLayer's default for an HTTPS call is 60 s; a step is planned for 180.
-        body: JSON.stringify({ input: item.input, resource_limits: { max_execution_seconds: 180 } }),
+        body: JSON.stringify({ input: head.input, resource_limits: { max_execution_seconds: 180 } }),
       });
       if (!response.ok) throw new Error(`OutLayer ${response.status}`);
-      output = (await response.json()).output;
+      result = { output: (await response.json()).output };
     } catch (error) {
-      if (item.tries + 1 < RETRIES) queue.unshift({ ...item, tries: item.tries + 1 });
-      else console.log(`gave up on an input after ${RETRIES} tries: ${error.message}`);
-      await this.ctx.storage.put("queue", queue);
-      await this.ctx.storage.setAlarm(Date.now() + 30_000 * (item.tries + 1));
-      return;
+      result = { error: error.message };
     }
-    if (output?.more === true && typeof output.job === "string") queue.unshift({ input: { step: output.job }, tries: 0 });
-    if (output?.job) console.log(`job ${output.job}: ${output.more ? "more" : output.failed ? `failed (${output.failed})` : "done"}`);
+    // Read again: requests that arrived during the call joined the queue.
+    const { queue, next, log } = settled((await this.ctx.storage.get("queue")) ?? [head], result);
+    if (log) console.log(log);
     await this.ctx.storage.put("queue", queue);
-    if (queue.length) await this.ctx.storage.setAlarm(Date.now());
+    if (next !== null) await this.ctx.storage.setAlarm(Date.now() + next);
   }
 }

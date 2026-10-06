@@ -3,7 +3,7 @@
 //! the operation and the status, never a path, since paths carry repository
 //! names and errors leave the enclave.
 use anyhow::{anyhow, bail, Result};
-use serde_json::{json, Value};
+use serde_json::Value;
 use wasip2::http::types::Method;
 
 use crate::net::{request, Response};
@@ -129,11 +129,6 @@ impl Repo {
 
     pub fn review(&self, number: u64, body: &Value) -> Result<()> {
         send(&self.token, Method::Post, &format!("{API}/repos/{}/pulls/{number}/reviews", self.repo), Some(body), "application/vnd.github+json", "post review")?;
-        Ok(())
-    }
-
-    pub fn comment(&self, number: u64, text: &str) -> Result<()> {
-        send(&self.token, Method::Post, &format!("{API}/repos/{}/issues/{number}/comments", self.repo), Some(&json!({ "body": text })), "application/vnd.github+json", "comment")?;
         Ok(())
     }
 

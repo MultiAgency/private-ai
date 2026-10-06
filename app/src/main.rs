@@ -7,7 +7,9 @@
 //!   `{"operation": "review_start", "repo": "owner/name", "pr": N, "dry": bool?, "passes": N?}`,
 //!   then `{"operation": "review_step", "job": "<id>"}`, with the caller's own
 //!   GITHUB_TOKEN, or none for a dry run on a public repository.
-//! Only the job's caller may step it. Output is only the job id, whether to call
+//! Only the author (manifest.json `author_secrets.owner`) may open a review,
+//! through either door, since reviews run on the author's NEAR AI key; only the
+//! job's caller may step it. Output is only the job id, whether to call
 //! again, and on failure a category (a dry run ends with counts and the receipt
 //! hash): never a repository name, a path or code. NEARAI_API_KEY is the
 //! author's secret (manifest.json).
@@ -54,6 +56,9 @@ fn main() {
     let store = host::Sealed;
     // OutLayer names the caller: the payment key's owner, or the transaction's signer.
     let caller = env("NEAR_SENDER_ID").unwrap_or_default();
+    // Reviews run on the author's NEAR AI key, so only the author opens them:
+    // the relay calls with the author's payment key. Anyone may step their own job.
+    let may_open = private_investigator::secret_owner(&MANIFEST).is_some_and(|owner| owner == caller);
     // A GitHub token for a job: the App's for an installation, else the caller's own (if any).
     let token = |installation: u64| -> anyhow::Result<String> {
         if installation == 0 {
@@ -85,6 +90,7 @@ fn main() {
     let output = match input["operation"].as_str() {
         // Connector-style operations: the caller brings a GitHub token (or none, for a dry run on a public repository).
         Some("status") => json!({ "name": "Private Investigator", "operations": ["status", "review_start", "review_step"], "version": env!("CARGO_PKG_VERSION") }),
+        Some("review_start") if !may_open => json!({ "failed": "not allowed", "more": false }),
         Some("review_start") => {
             let job = new_job();
             match (input["repo"].as_str(), input["pr"].as_u64()) {
@@ -102,7 +108,9 @@ fn main() {
         Some(_) => json!({ "failed": "unknown operation", "more": false }),
         // The App's relay: ids from a GitHub event, then steps.
         None => {
-            if let Some(event) = input.get("event") {
+            if input.get("event").is_some() && !may_open {
+                json!({ "failed": "not allowed", "more": false })
+            } else if let Some(event) = input.get("event") {
                 let job = new_job();
                 match (event["installation"].as_u64(), event["repo_id"].as_u64(), event["pr"].as_u64()) {
                     (Some(installation), Some(repo_id), Some(pr)) => {
@@ -136,8 +144,8 @@ fn main() {
 #[cfg(all(target_arch = "wasm32", not(feature = "outlayer")))]
 fn main() -> anyhow::Result<()> {
     use anyhow::Context;
-    use private_investigator::agent::{Agent, Finish, Next, MAX_REPLY_TOKENS};
-    use private_investigator::{github, iso_time, net, receipt::receipt, repo::Repo, review};
+    use private_investigator::agent::{Agent, Finish, Next};
+    use private_investigator::{github, iso_time, job::HOSTED_REPLY_CAP, net, receipt::receipt, repo::Repo, review};
     use serde_json::{json, Value};
 
     let mut input = String::new();
@@ -172,7 +180,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
     let rubric = if rubric.is_empty() { review::spec()["default_rubric"].as_str().unwrap_or("").to_string() } else { rubric.join("\n\n") };
-    let tree = Repo::from_tarball(&gh.tarball(&head)?).map_err(|_| anyhow::anyhow!("the head commit could not be read"))?;
+    let tree = Repo::from_tarball(&gh.tarball(&head)?, usize::MAX).map_err(|_| anyhow::anyhow!("the head commit could not be read"))?;
     eprintln!("#{number}: {} files changed, {} files in the head commit", files.len(), tree.file_count());
 
     let (evidence, attestation) = client.attest(&model, false).context("attestation failed, so no code was sent")?;
@@ -182,7 +190,8 @@ fn main() -> anyhow::Result<()> {
     let submit = review::spec()["submit_tool"].clone();
     let check = |args: &Value| review::check_submission(args);
     let finish = Finish { tool: &submit, check: &check };
-    let reply_cap = input["reply_cap"].as_u64().unwrap_or(MAX_REPLY_TOKENS);
+    // As the hosted App runs, so the eval measures what it ships.
+    let reply_cap = input["reply_cap"].as_u64().unwrap_or(HOSTED_REPLY_CAP);
     // Passes one after another, merged as the hosted job merges them.
     let mut results = Vec::new();
     let mut turns = Vec::new();

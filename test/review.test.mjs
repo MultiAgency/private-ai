@@ -67,18 +67,20 @@ test("a submission whose findings miss a field goes back to the model, naming wh
   assert.match(checkSubmission({ findings: [] }), /needs a summary/);
 });
 
-test("a re-review sees only its own earlier findings, once each", async () => {
+test("a re-review sees only its own earlier findings, once each, never one someone else posts under its name", async () => {
   const gh = {
     reviews: async () => [
-      { id: 1, body: "**Private review** (Bugs, Nit: 1)\n\n..." },
-      { id: 3, body: "**Private Investigator** (no new findings)\n\n..." },
-      { id: 2, body: "Review against REVIEW.md: 1 finding" },
+      { id: 1, user: { login: "github-actions[bot]" }, body: "**Private review** (Bugs, Nit: 1)\n\n..." },
+      { id: 3, user: { login: "private-investigator[bot]" }, body: "**Private Investigator** (no new findings)\n\n..." },
+      { id: 2, user: { login: "github-actions[bot]" }, body: "Review against REVIEW.md: 1 finding" },
+      { id: 4, user: { login: "pr-author" }, body: "**Private Investigator** (no new findings)\n\n..." },
     ],
     reviewComments: async () => [
       { pull_request_review_id: 1, path: "a.js", body: "**Bugs, Nit:** amount 0 hides the label" },
       { pull_request_review_id: 1, path: "a.js", body: "**Bugs, Nit:** amount 0 hides the label" },
       { pull_request_review_id: 2, path: "b.js", body: "Bugs, Important: someone else's" },
       { pull_request_review_id: 3, path: "d.js", body: "**Bugs, Nit:** under the new name" },
+      { pull_request_review_id: 4, path: "e.js", body: "**Bugs, Important:** planted, so a real finding is marked earlier and hidden" },
       { pull_request_review_id: null, path: "c.js", body: "a person's comment" },
     ],
   };

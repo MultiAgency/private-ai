@@ -23,7 +23,8 @@ test("an edited turn, signer or verdict fails", async () => {
     return verifyReceipt(JSON.stringify(receipt), options);
   };
   await assert.rejects(edit(r => { r.turns[3].request_sha256 = "0".repeat(64); }), /exact request and response/);
-  await assert.rejects(edit(r => { r.turns.pop(); r.turns.push({ ...r.turns[0], signature: { ...r.turns[0].signature, signing_address: "11".repeat(32) } }); }), /other than the attested/);
+  await assert.rejects(edit(r => { r.turns[0] = { ...r.turns[0], signature: { ...r.turns[0].signature, signing_address: "11".repeat(32) } }; }), /other than the attested/);
+  await assert.rejects(edit(r => { r.turns.push(r.turns[0]); }), /listed twice/);
   await assert.rejects(edit(r => { r.gpu_token = r.gpu_token.replace(/\.[^.]+$/, ".AAAA"); }), /NVIDIA/);
   await assert.rejects(edit(r => { r.nonce = "00".repeat(32); }), /report data does not bind/);
   await assert.rejects(edit(r => { r.turns = []; }), /no signed turns/);
@@ -50,7 +51,10 @@ test("hashes match the App's (app/tests/core.rs pins the same values)", () => {
   assert.equal(subjectCommitment("00112233445566778899aabbccddeeff", subject), "1713fd61b577b8dbe92fc4de33840d7f7d1c494908b33737395fc21ec322dc28");
 });
 
-function v2(change = () => {}) {
+// As app/builds.json records a release.
+const published = [{ hash: "5e".repeat(32), commit: "c0ffee".padEnd(40, "0"), clean: true, project: "hack.near/private-investigator" }];
+
+function v2(change = () => {}, wasm = "5e".repeat(32)) {
   const v1 = JSON.parse(text);
   const salt = "ab".repeat(16);
   const subject = { pull_request: v1.subject.pull_request, base_sha: v1.subject.base_sha, head_sha: v1.subject.head_sha };
@@ -78,13 +82,15 @@ function v2(change = () => {}) {
   const lastOutput = { findings: 1, job, more: false, receipt_sha256: sha256(body), subject_sha256: receipt.subject_sha256, turns: hashes.slice(half) };
   const outputs = [...receipt.outlayer.runs.slice(0, -1).map(r => r.output), lastOutput];
   // Stub attestations: each binds its run's output, as OutLayer's does.
-  const records = Object.fromEntries(receipt.outlayer.runs.map((r, i) => [r.call_id, { output_hash: sha256(canonical(outputs[i])), wasm_hash: "5e".repeat(32), timestamp: 1_791_000_000 }]));
-  const checkStep = async (record, { project, output }) => {
-    if (project !== "hack.near/private-investigator") throw new Error("wrong project");
+  const records = Object.fromEntries(receipt.outlayer.runs.map((r, i) => [r.call_id, { project_id: receipt.outlayer.project, output_hash: sha256(canonical(outputs[i])), wasm_hash: wasm, timestamp: 1_791_000_000 }]));
+  // As verifyStep checks the attested record (outlayer.test.mjs checks the real one).
+  const checkStep = async (record, { project, wasmHashes, output }) => {
+    if (record.project_id !== project) throw new Error("wrong project");
+    if (!wasmHashes.includes(record.wasm_hash)) throw new Error(`ran WASM ${record.wasm_hash}, not a published build`);
     if (sha256(canonical(output)) !== record.output_hash) throw new Error("output does not match the attested hash");
     return { wasmHash: record.wasm_hash };
   };
-  return { body, salt, subject, opts: { ...options, getRecord: async id => records[id], approvedFor: async () => [], checkStep } };
+  return { body, salt, subject, opts: { ...options, published, getRecord: async id => records[id], approvedFor: async () => [], checkStep } };
 }
 
 test("a version 2 receipt verifies: model evidence, every run, and the commitment the review's salt opens", async () => {
@@ -92,7 +98,7 @@ test("a version 2 receipt verifies: model evidence, every run, and the commitmen
   const { runs, subjectConfirmed, model } = await verifyReceipt(body, { ...opts, salt, subject });
   assert.equal(model.tcb, "UpToDate");
   assert.equal(runs.steps.length, 4);
-  assert.deepEqual(runs.builds, ["5e".repeat(32)]);
+  assert.deepEqual(runs.builds, published);
   assert.equal(subjectConfirmed, true);
   await assert.rejects(verifyReceipt(body, { ...opts, salt: "00".repeat(16), subject }), /not for this pull request/);
   await assert.rejects(verifyReceipt(body, { ...opts, expectSha256: "0".repeat(64) }), /not the one the review cites/);
@@ -111,4 +117,24 @@ test("a version 2 receipt fails when its runs do not prove its parts", async () 
   const { body, opts } = v2();
   const edited = JSON.stringify({ ...JSON.parse(body), outlayer: { ...JSON.parse(body).outlayer, findings: 0 } }, null, 2);
   await assert.rejects(verifyReceipt(edited, opts), /output does not match/);
+});
+
+test("a version 2 receipt counts only as the published project's published builds", async () => {
+  // Another project, running its own code, can attest whatever outputs it likes.
+  const elsewhere = v2(r => { r.outlayer.project = "attacker.near/fake-investigator"; });
+  await assert.rejects(verifyReceipt(elsewhere.body, elsewhere.opts), /not one whose builds are published/);
+  // Our project, running a build no release recorded.
+  const unpublished = v2(() => {}, "de".repeat(32));
+  await assert.rejects(verifyReceipt(unpublished.body, unpublished.opts), /not a published build/);
+  // A checker with nothing to check against refuses rather than trusting the receipt.
+  const { body, opts } = v2();
+  await assert.rejects(verifyReceipt(body, { ...opts, published: undefined }), /no published builds/);
+});
+
+test("the Reader claim names the build and the commit it rebuilds from", async () => {
+  const { provenClaims } = await import("../core/receipt.mjs");
+  const { body, opts } = v2();
+  const { receipt, model, gateway, runs } = await verifyReceipt(body, opts);
+  const reader = provenClaims({ model: receipt.model, attestation: { model, gateway }, turns: receipt.turns.length, runs }).find(([claim]) => claim === "Reader")[1];
+  assert.match(reader, new RegExp(`build \`${"5e".repeat(32)}\`, built from commit \`c0ffee0{34}\``));
 });

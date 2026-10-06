@@ -23,6 +23,12 @@ export async function signedByGitHub(secret, body, header) {
 // keeps the noise and the cost down (owner, 2026-10-05).
 const PR_ACTIONS = new Set(["opened", "reopened", "ready_for_review"]);
 
+// A `/review` from someone with no history in the repository is dropped here,
+// before it costs an OutLayer call: they cannot write to it. Everyone else's
+// goes on, and the enclave checks their permission on GitHub (an organization
+// member can show as a contributor, so the association alone decides nothing more).
+const STRANGERS = new Set(["NONE", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "MANNEQUIN"]);
+
 /**
  * The ids of the pull request an event asks to review, or null. A `/review`
  * comment is passed on by its id: the enclave reads the comment from GitHub and
@@ -38,7 +44,8 @@ export function reviewRequest(event, payload) {
   let comment;
   let rerun;
   if (event === "pull_request" && PR_ACTIONS.has(payload.action)) pr = payload.pull_request?.number;
-  else if (event === "issue_comment" && payload.action === "created" && payload.issue?.pull_request && /^\/review\b/.test(payload.comment?.body ?? "")) {
+  else if (event === "issue_comment" && payload.action === "created" && payload.issue?.pull_request && /^\/review\b/.test(payload.comment?.body ?? "")
+    && !STRANGERS.has(payload.comment?.author_association ?? "NONE")) {
     pr = payload.issue.number;
     comment = payload.comment.id;
   } else if (event === "check_run" && payload.action === "rerequested") {
@@ -52,4 +59,32 @@ export function reviewRequest(event, payload) {
 /** OutLayer's input for a new review: ids, and a nonce so its public input hash can't be guessed. */
 export function eventInput(request) {
   return { event: { ...request, nonce: hex(crypto.getRandomValues(new Uint8Array(16))) } };
+}
+
+// The queue of OutLayer inputs one pull request's driver works through.
+const RETRIES = 3;
+/** Inputs a pull request may have waiting; more are dropped (a flood of requests). */
+export const MAX_QUEUED = 10;
+
+/** The queue with a new request added, or null when it is full. */
+export function enqueued(queue, input) {
+  return queue.length >= MAX_QUEUED ? null : [...queue, { input, tries: 0 }];
+}
+
+/**
+ * The queue after a call on its head: the head is done, retried, or followed
+ * by the job's next step. `queue` is read after the call, since requests may
+ * have joined it meanwhile; they only ever join at the end, so the head is
+ * still first. Returns the queue, when to call next (ms from now, or null),
+ * and a line to log (ids only).
+ */
+export function settled(queue, { output, error }) {
+  const [head, ...rest] = queue;
+  if (error) {
+    if (head.tries + 1 < RETRIES) return { queue: [{ ...head, tries: head.tries + 1 }, ...rest], next: 30_000 * (head.tries + 1) };
+    return { queue: rest, next: rest.length ? 0 : null, log: `gave up on an input after ${RETRIES} tries: ${error}` };
+  }
+  const after = output?.more === true && typeof output.job === "string" ? [{ input: { step: output.job }, tries: 0 }, ...rest] : rest;
+  const log = output?.job && `job ${output.job}: ${output.more ? "more" : output.failed ? `failed (${output.failed})` : "done"}`;
+  return { queue: after, next: after.length ? 0 : null, log };
 }
