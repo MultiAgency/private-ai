@@ -17,6 +17,10 @@ pub struct Evidence {
     pub nonce: String,
     pub report: Value,
     pub gpu_token: String,
+    /// The key that signed NVIDIA's verdict, with its certificate chain: NVIDIA
+    /// lists only current keys, so the receipt keeps the one it needs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_key: Option<Value>,
     pub allow_unpatched_model: bool,
 }
 
@@ -31,19 +35,21 @@ pub struct Evidence {
 ///   The last run's output is not listed: it carries this receipt's own hash,
 ///   and the checker rebuilds it from the receipt.
 pub fn receipt_v2(subject_sha256: &str, model: &str, evidence: &Evidence, turns: &[Value], created_at: &str, outlayer: &Value) -> (String, String) {
-    let text = serde_json::to_string_pretty(&json!({
-        "version": 2,
-        "subject_sha256": subject_sha256,
-        "model": model,
-        "created_at": created_at,
-        "nonce": evidence.nonce,
-        "attestation": evidence.report,
-        "gpu_token": evidence.gpu_token,
-        "policy": { "allow_unpatched_model": evidence.allow_unpatched_model },
-        "turns": turns,
-        "outlayer": outlayer,
-    }))
-    .expect("receipt serializes");
+    let mut receipt = serde_json::Map::new();
+    receipt.insert("version".into(), json!(2));
+    receipt.insert("subject_sha256".into(), json!(subject_sha256));
+    receipt.insert("model".into(), json!(model));
+    receipt.insert("created_at".into(), json!(created_at));
+    receipt.insert("nonce".into(), json!(evidence.nonce));
+    receipt.insert("attestation".into(), evidence.report.clone());
+    receipt.insert("gpu_token".into(), json!(evidence.gpu_token));
+    if let Some(key) = &evidence.gpu_key {
+        receipt.insert("gpu_key".into(), key.clone());
+    }
+    receipt.insert("policy".into(), json!({ "allow_unpatched_model": evidence.allow_unpatched_model }));
+    receipt.insert("turns".into(), json!(turns));
+    receipt.insert("outlayer".into(), outlayer.clone());
+    let text = serde_json::to_string_pretty(&receipt).expect("receipt serializes");
     let hash = sha256(text.as_bytes());
     (text, hash)
 }

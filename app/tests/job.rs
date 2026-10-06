@@ -128,7 +128,7 @@ fn drafts_are_skipped() {
 #[test]
 fn a_failed_attestation_posts_nothing_and_says_so_without_repository_details() {
     let (store, hub, young) = (Memory::default(), Hub::default(), at(0));
-    let model = Scripted { fail_attestation: true, die_on_turn: Cell::new(None) };
+    let model = Scripted { fail_attestation: true, ..model() };
     start(&store, &hub, &at(0), "j6", 1, "owner/secret-repo", 7, &settings(1)).unwrap();
     let step = run_step(&store, &hub, &model, &young, "j6");
     assert_eq!(step.outcome, Outcome::Failed(Failure::Attestation));
@@ -292,8 +292,11 @@ struct Replayed {
 impl Model for Replayed {
     fn attest(&self, _: &str, allow: bool) -> Result<(Evidence, Attestation)> {
         let s = &self.sample;
-        let evidence = Evidence { nonce: s["nonce"].as_str().unwrap().into(), report: s["attestation"].clone(), gpu_token: s["gpu_token"].as_str().unwrap().into(), allow_unpatched_model: allow };
-        Ok((evidence, Attestation { gateway: summary("OutOfDate"), model: Attested { summary: summary("UpToDate"), gpu_token: String::new(), public_key: String::new() } }))
+        // The key that signed the sample's verdict, with its chain, as recorded for it.
+        let recorded: Value = serde_json::from_str(include_str!("../../test/fixtures/sample-receipt-evidence.json")).unwrap();
+        let gpu_key = recorded["keys"][0].clone();
+        let evidence = Evidence { nonce: s["nonce"].as_str().unwrap().into(), report: s["attestation"].clone(), gpu_token: s["gpu_token"].as_str().unwrap().into(), gpu_key: Some(gpu_key.clone()), allow_unpatched_model: allow };
+        Ok((evidence, Attestation { gateway: summary("OutOfDate"), model: Attested { summary: summary("UpToDate"), gpu_token: String::new(), gpu_key, public_key: String::new() } }))
     }
     fn turn(&self, agent: &mut Agent, _: &str, _: &str, _: &[Value], finish: &Finish, call: &mut dyn FnMut(&str, &Value) -> String) -> Result<Next> {
         let k = self.next.get();
@@ -366,4 +369,14 @@ fn the_receipts_the_job_writes_are_the_ones_the_checker_is_tested_on() {
     }
     let kept = std::fs::read_to_string(&path).unwrap_or_default();
     assert!(kept == text, "the job now writes different receipts: run `BLESS=1 cargo test`, then `npm test`, and commit test/fixtures/receipt-v2-cases.json");
+}
+
+#[test]
+fn the_check_says_nothing_to_report_only_when_nothing_is_open() {
+    let (store, hub, young) = (Memory::default(), Hub::default(), at(0));
+    let model = Scripted { earlier: true, ..model() };
+    start(&store, &hub, &young, "j14", 1, "o/r", 7, &settings(1)).unwrap();
+    run_step(&store, &hub, &model, &young, "j14");
+    assert_eq!(run_step(&store, &hub, &model, &young, "j14").outcome, Outcome::Done);
+    assert_eq!(hub.checks.borrow().last().unwrap()["body"]["output"]["title"], "Case closed: no new leads, 1 still open");
 }

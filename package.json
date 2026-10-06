@@ -13,12 +13,15 @@
     "site": "node site/build.mjs",
     "sample": "node review/review.mjs --repo MultiAgency/near-agencies --pr 78 --head 5dc83600b2c1dee0d95e2f6221c9d8144d7733c2 --dry-run --review site/sample-review.json --receipt site/sample-receipt.json && node test/record-evidence.mjs",
     "eval": "node eval/run.mjs",
-    "models": "node core/models.mjs"
+    "models": "node core/models.mjs",
+    "nvidia-keys": "node core/archive-nvidia-keys.mjs"
   },
   "dependencies": {
     "@noble/ciphers": "2.4.0",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
+    "@peculiar/asn1-schema": "2.10.0",
+    "@peculiar/asn1-x509": "2.10.0",
     "@phala/dcap-qvl": "0.6.5",
     "undici": "8.11.2"
   },

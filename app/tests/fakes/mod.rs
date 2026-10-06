@@ -81,6 +81,8 @@ impl Forge for Hub {
 pub struct Scripted {
     pub fail_attestation: bool,
     pub die_on_turn: Cell<Option<u64>>,
+    /// Its finding is one it posted before, still open.
+    pub earlier: bool,
 }
 
 pub fn summary(tcb: &str) -> Summary {
@@ -92,8 +94,8 @@ impl Model for Scripted {
         if self.fail_attestation {
             bail!("model: TCB status OutOfDate not accepted (repository owner/secret-repo)");
         }
-        let evidence = Evidence { nonce: "00".repeat(32), report: json!({}), gpu_token: "t".into(), allow_unpatched_model: allow };
-        Ok((evidence, Attestation { gateway: summary("OutOfDate"), model: Attested { summary: summary("UpToDate"), gpu_token: "t".into(), public_key: "5a".repeat(32) } }))
+        let evidence = Evidence { nonce: "00".repeat(32), report: json!({}), gpu_token: "t".into(), gpu_key: None, allow_unpatched_model: allow };
+        Ok((evidence, Attestation { gateway: summary("OutOfDate"), model: Attested { summary: summary("UpToDate"), gpu_token: "t".into(), gpu_key: Value::Null, public_key: "5a".repeat(32) } }))
     }
     fn turn(&self, agent: &mut Agent, _: &str, _: &str, _: &[Value], finish: &Finish, call: &mut dyn FnMut(&str, &Value) -> String) -> Result<Next> {
         if self.die_on_turn.get() == Some(agent.turn + 1) {
@@ -105,7 +107,7 @@ impl Model for Scripted {
         } else {
             let read = agent.messages.iter().any(|m| m["role"] == "tool" && m["content"].as_str().unwrap_or("").contains(">= 0"));
             assert!(read, "the tool read the head commit");
-            let submission = json!({ "summary": "Checked the payout guard.", "findings": [{ "path": "lib/pay.mjs", "line": 1, "pass": "Bugs", "severity": "Important", "body": "Zero totals are sent." }] });
+            let submission = json!({ "summary": "Checked the payout guard.", "findings": [{ "path": "lib/pay.mjs", "line": 1, "pass": "Bugs", "severity": "Important", "body": "Zero totals are sent.", "earlier": self.earlier }] });
             json!({ "content": "", "tool_calls": [{ "id": "c2", "type": "function", "function": { "name": "submit_review", "arguments": submission.to_string() } }] })
         };
         let record = json!({ "id": format!("chat-{}", agent.turn + 1), "request_sha256": "", "response_sha256": "", "signature": {} });
@@ -143,7 +145,7 @@ pub fn settings(passes: u64) -> Settings {
 }
 
 pub fn model() -> Scripted {
-    Scripted { fail_attestation: false, die_on_turn: Cell::new(None) }
+    Scripted { fail_attestation: false, die_on_turn: Cell::new(None), earlier: false }
 }
 
 /// The published receipt (raw text) under `public:receipt:<sha>`.

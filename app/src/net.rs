@@ -321,7 +321,7 @@ impl NearAi {
             &nonce,
             &Options { verify_quote: &verify_quote_live, nvidia: &LiveNvidia, gpu_token: None, allow_unpatched_model },
         )?;
-        let evidence = Evidence { nonce, report, gpu_token: attestation.model.gpu_token.clone(), allow_unpatched_model };
+        let evidence = Evidence { nonce, report, gpu_token: attestation.model.gpu_token.clone(), gpu_key: Some(attestation.model.gpu_key.clone()), allow_unpatched_model };
         Ok((evidence, attestation))
     }
 

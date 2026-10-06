@@ -167,7 +167,12 @@ Before any data is sent, a run checks NEAR AI Cloud's attestation report for a f
   and our nonce. Its configuration measurement matches the attested compose
   file, and its event log replays to RTMR3. NVIDIA's attestation service
   approves its GPUs for the same nonce, in a verdict NVIDIA signs. The receipt
-  keeps that verdict.
+  keeps that verdict, and the NVIDIA key that signed it with its certificate
+  chain: NVIDIA rotates its keys within days, so the key counts as NVIDIA's
+  when its certificate was issued by NVIDIA's attestation intermediate (pinned
+  in `core/attest.mjs`) and was valid when the verdict was signed. Receipts
+  written before they kept the key are served by an archive of NVIDIA's keys,
+  `core/nvidia-keys.json` (`npm run nvidia-keys`), held to the same check.
 - **Gateway enclave:** the same quote checks, except that a pending platform
   patch (`OutOfDate` and the like) is allowed and `Revoked` is not. Under
   end-to-end encryption the gateway relays only ciphertext.
@@ -210,7 +215,8 @@ node core/verify.mjs private-review-receipt.json
 
 Both run [`verifyReceipt`](core/receipt.mjs). It re-runs the attestation checks
 on the recorded report against current Intel collateral, and checks NVIDIA's
-recorded verdict against NVIDIA's published keys. It also checks every response
+recorded verdict against the NVIDIA key that signed it, back to NVIDIA's pinned
+intermediate. It also checks every response
 signature against the attested model key. The receipt holds hashes of the
 encrypted requests and responses, not the bytes, so it carries none of the
 reviewed code.

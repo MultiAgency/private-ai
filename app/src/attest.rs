@@ -82,6 +82,8 @@ pub struct Summary {
 pub struct Model {
     pub summary: Summary,
     pub gpu_token: String,
+    /// The NVIDIA key that signed the verdict, with its certificate chain.
+    pub gpu_key: Value,
     pub public_key: String,
 }
 
@@ -182,8 +184,9 @@ fn base64url(text: &str) -> Result<Vec<u8>> {
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(text.trim_end_matches('='))?)
 }
 
-/// Checks NVIDIA's signature on the verdict, its issuer, its result and our nonce.
-pub fn check_nvidia_token(token: &str, nonce: &str, keys: &[Value]) -> Result<()> {
+/// Checks NVIDIA's signature on the verdict, its issuer, its result and our
+/// nonce. Returns the key that signed it, for the receipt to keep.
+pub fn check_nvidia_token(token: &str, nonce: &str, keys: &[Value]) -> Result<Value> {
     let mut parts = token.split('.');
     let (Some(header), Some(claims), Some(signature)) = (parts.next(), parts.next(), parts.next()) else {
         bail!("NVIDIA verdict is not a JWT");
@@ -217,7 +220,7 @@ pub fn check_nvidia_token(token: &str, nonce: &str, keys: &[Value]) -> Result<()
     if verdict["x-nvidia-overall-att-result"] != Value::Bool(true) {
         bail!("NVIDIA did not attest the GPUs");
     }
-    Ok(())
+    Ok(key.clone())
 }
 
 fn check_model(candidate: &Value, nonce: &str, options: &Options) -> Result<Model> {
@@ -238,12 +241,12 @@ fn check_model(candidate: &Value, nonce: &str, options: &Options) -> Result<Mode
         Some(token) => token.to_string(),
         None => options.nvidia.token(&payload)?,
     };
-    check_nvidia_token(&token, nonce, &options.nvidia.keys()?)?;
+    let gpu_key = check_nvidia_token(&token, nonce, &options.nvidia.keys()?)?;
     let public_key = candidate["signing_public_key"].as_str().unwrap_or("");
     if public_key.to_lowercase() != summary.signer.to_lowercase() {
         bail!("encryption key is not the attested signing key");
     }
-    Ok(Model { summary, gpu_token: token, public_key: public_key.to_string() })
+    Ok(Model { summary, gpu_token: token, gpu_key, public_key: public_key.to_string() })
 }
 
 /// Checks the gateway and every model candidate, and returns the gateway

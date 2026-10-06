@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { p384 } from "@noble/curves/nist.js";
 
-import { checkNvidiaToken, verifyAttestation } from "../core/attest.mjs";
+import { archivedNvidiaKeys, checkNvidiaToken, nvidiaSigningKey, verifyAttestation } from "../core/attest.mjs";
 import { nvidiaKeys, receipt, verifyQuote } from "./evidence.mjs";
 
 const { nonce, gpu_token: token } = receipt;
@@ -85,20 +85,43 @@ test("GPU evidence must bind the nonce, and NVIDIA's signed verdict must approve
   await assert.rejects(verifyAttestation(missing, nonce, options), /no GPU evidence/);
 });
 
-test("NVIDIA's verdict must carry NVIDIA's signature (either S form), our nonce and a pass", () => {
-  checkNvidiaToken(token, nonce, nvidiaKeys);
-  assert.throws(() => checkNvidiaToken(token, "00".repeat(32), nvidiaKeys), /another nonce/);
-  assert.throws(() => checkNvidiaToken(token, nonce, []), /not signed by a published NVIDIA key/);
+test("NVIDIA's verdict must carry NVIDIA's signature (either S form), our nonce and a pass", async () => {
+  await checkNvidiaToken(token, nonce, nvidiaKeys);
+  await assert.rejects(checkNvidiaToken(token, "00".repeat(32), nvidiaKeys), /another nonce/);
+  await assert.rejects(checkNvidiaToken(token, nonce, []), /not signed by a known NVIDIA key/);
 
   const [header, claims, signature] = token.split(".");
   const raw = Buffer.from(signature, "base64url");
   const n = p384.Point.CURVE().n;
   const highS = (n - BigInt(`0x${raw.subarray(48).toString("hex")}`)).toString(16).padStart(96, "0");
   const flipped = Buffer.concat([raw.subarray(0, 48), Buffer.from(highS, "hex")]).toString("base64url");
-  checkNvidiaToken(`${header}.${claims}.${flipped}`, nonce, nvidiaKeys);
+  await checkNvidiaToken(`${header}.${claims}.${flipped}`, nonce, nvidiaKeys);
   const verdict = JSON.parse(Buffer.from(claims, "base64url"));
   const failed = Buffer.from(JSON.stringify({ ...verdict, "x-nvidia-overall-att-result": false })).toString("base64url");
-  assert.throws(() => checkNvidiaToken(`${header}.${failed}.${signature}`, nonce, nvidiaKeys), /invalid signature/);
+  await assert.rejects(checkNvidiaToken(`${header}.${failed}.${signature}`, nonce, nvidiaKeys), /invalid signature/);
+});
+
+test("an NVIDIA key counts only with a certificate chain from NVIDIA's pinned intermediate, valid when the verdict was signed", async () => {
+  const [key] = nvidiaKeys;
+  const signedAt = JSON.parse(Buffer.from(token.split(".")[1], "base64url")).iat;
+  assert.equal((await nvidiaSigningKey(key, signedAt)).length, 97, "an uncompressed P-384 point");
+  // Years later, the same key still checks out for that verdict: what keeps receipts checkable.
+  await checkNvidiaToken(token, nonce, [key]);
+  await assert.rejects(nvidiaSigningKey(key, signedAt + 30 * 86400), /not valid when the verdict was signed/);
+  await assert.rejects(nvidiaSigningKey({ ...key, x5c: undefined }, signedAt), /no certificate chain/);
+  // Bare coordinates with someone else's chain: the leaf no longer matches the key.
+  const [other] = archivedNvidiaKeys().filter(k => k.kid !== key.kid);
+  await assert.rejects(nvidiaSigningKey({ ...key, x5c: other.x5c }, signedAt), /not valid when the verdict was signed|does not match its certificate/);
+  // A chain issued by anything but the pinned intermediate.
+  await assert.rejects(nvidiaSigningKey({ ...key, x5c: [key.x5c[0], key.x5c[0]] }, signedAt), /not issued by NVIDIA's attestation intermediate/);
+  // A forged leaf: one byte of its signed part changed.
+  const leaf = Buffer.from(key.x5c[0], "base64");
+  leaf[40] ^= 1;
+  await assert.rejects(nvidiaSigningKey({ ...key, x5c: [leaf.toString("base64"), key.x5c[1]] }, signedAt), /not signed by NVIDIA's attestation intermediate|not valid|does not match/);
+});
+
+test("the archive holds the sample receipt's key, long gone from NVIDIA's list", () => {
+  assert.ok(archivedNvidiaKeys().some(k => k.kid === nvidiaKeys[0].kid));
 });
 
 test("a receipt's recorded verdict is checked instead of asking NVIDIA again", async () => {

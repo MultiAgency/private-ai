@@ -504,13 +504,27 @@ fn finish(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, state:
     // The check run closes first and the review is the last write: if posting
     // fails, the job fails (and says so on the check run) with no review out,
     // so a retried request reviews again; once posted, nothing is left to fail.
+    let still_open = review["findings"].as_array().map_or(0, Vec::len) - tally;
     forge.check_run(state.check_run, &json!({
         "status": "completed", "conclusion": "neutral",
-        "output": { "title": if tally == 0 { "Case closed: nothing to report".to_string() } else { format!("Case closed: {tally} lead{}", if tally == 1 { "" } else { "s" }) }, "summary": format!("Receipt sha256 `{sha}`: [check it]({link}).") },
+        "output": { "title": case_closed(tally, still_open), "summary": format!("Receipt sha256 `{sha}`: [check it]({link}).") },
     }))?;
     forge.review(state.number, &json!({ "commit_id": pr["head"]["sha"], "event": "COMMENT", "body": posted["body"], "comments": posted["comments"] }))?;
     let _ = remove(store, &key(job));
     Ok(step)
+}
+
+/// The finished check's title: new leads, and earlier ones the review found
+/// still open (posted before, so not again), so "nothing to report" is said
+/// only when it is true.
+fn case_closed(new: usize, still_open: usize) -> String {
+    let leads = |n: usize| format!("{n} lead{}", if n == 1 { "" } else { "s" });
+    match (new, still_open) {
+        (0, 0) => "Case closed: nothing to report".into(),
+        (0, open) => format!("Case closed: no new leads, {open} still open"),
+        (new, 0) => format!("Case closed: {}", leads(new)),
+        (new, open) => format!("Case closed: {} new, {open} still open", leads(new)),
+    }
 }
 
 /// Runs a step and turns any failure into its kind (failure.rs): the job is

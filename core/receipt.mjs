@@ -28,6 +28,9 @@ export function receipt({ subject, model, evidence, turns }) {
     nonce: evidence.nonce,
     attestation: evidence.report,
     gpu_token: evidence.gpuToken,
+    // The key that signed NVIDIA's verdict, with its certificate chain: NVIDIA
+    // lists only current keys, so the receipt keeps the one it needs.
+    gpu_key: evidence.gpuKey,
     policy: { allow_unpatched_model: evidence.allowUnpatchedModel === true },
     turns,
   }, null, 2);
@@ -67,6 +70,7 @@ export async function verifyReceipt(text, options = {}) {
   const { gateway, model } = await verifyAttestation(receipt.attestation, receipt.nonce, {
     ...options,
     gpuToken: receipt.gpu_token,
+    gpuKey: receipt.gpu_key,
     allowUnpatchedModel: receipt.policy?.allow_unpatched_model === true,
   });
   if (!receipt.turns?.length) throw new Error("no signed turns");

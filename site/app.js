@@ -22,11 +22,14 @@ const pinned = path => `MultiAgency/private-ai/${path}@${actionRef}${actionRef =
 
 const DEFAULT_MODEL = review.defaults.model;
 
+// A model id is a short path; anything else is left out (and the form says so).
+const modelId = model => /^[\w.:-]+\/[\w.:-]+$/.test(model);
+
 // The review step's inputs: the key, and the model and policy when they differ
-// from the defaults. A model id is a short path, so anything else is dropped.
+// from the defaults.
 function inputs({ model, unpatched }) {
   const lines = ["nearai-api-key: \${{ secrets.NEARAI_API_KEY }}"];
-  if (/^[\w.:-]+\/[\w.:-]+$/.test(model) && model !== DEFAULT_MODEL) lines.push(`model: ${model}`);
+  if (modelId(model) && model !== DEFAULT_MODEL) lines.push(`model: ${model}`);
   if (unpatched) lines.push('allow-unpatched-model: "true"');
   return lines.map(line => `\n          ${line}`).join("");
 }
@@ -84,7 +87,11 @@ on:
     types: [created]` : ""}
 
 jobs:${forks ? gatedJobs(options) : reviewJob(options, `
-    if: \${{ !github.event.pull_request.draft }}`)}
+    # A fork's pull request gets no secrets, so it can't be reviewed here.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (!github.event.pull_request.draft
+        && github.event.pull_request.head.repo.full_name == github.repository)`)}
 `;
 }
 
@@ -93,7 +100,10 @@ function render() {
   const valid = /^[\w.-]+$/.test(owner ?? "") && /^[\w.-]+$/.test(name ?? "");
   const repo = valid ? `${owner}/${name}` : "OWNER/REPO";
   const branch = $("#branch").value.trim() || "main";
-  const yaml = workflow({ forks: $("#forks").checked, model: $("#model").value.trim() || DEFAULT_MODEL, unpatched: $("#unpatched").checked });
+  const model = $("#model").value.trim() || DEFAULT_MODEL;
+  const yaml = workflow({ forks: $("#forks").checked, model, unpatched: $("#unpatched").checked });
+  $("#repo-error").hidden = valid || !$("#repo").value.trim();
+  $("#model-error").hidden = modelId(model);
 
   $("#workflow").textContent = yaml;
   $("#secret-command").textContent = `gh secret set NEARAI_API_KEY -R ${repo}`;
@@ -102,7 +112,15 @@ function render() {
   const create = $("#create-link");
   create.href = `https://github.com/${repo}/new/${encodeURIComponent(branch)}` +
     `?filename=${encodeURIComponent(".github/workflows/private-review.yml")}&value=${encodeURIComponent(yaml)}`;
-  for (const link of [secrets, create]) link.toggleAttribute("aria-disabled", !valid);
+  // Until the repository is valid, the links lead nowhere, for the keyboard too.
+  for (const link of [secrets, create]) {
+    link.toggleAttribute("aria-disabled", !valid);
+    if (valid) link.removeAttribute("tabindex");
+    else {
+      link.removeAttribute("href");
+      link.tabIndex = -1;
+    }
+  }
 }
 
 for (const id of ["#repo", "#branch", "#forks", "#model", "#unpatched"]) $(id).addEventListener("input", render);
@@ -137,7 +155,30 @@ async function verify(text, options = {}) {
   return { receipt, sha256, claims, subject: subjectConfirmed ? options.subject : receipt.subject };
 }
 
+// A check that doesn't end in "Verified" ends one of two ways, which a reader
+// must be able to tell apart: the receipt failed a check (it isn't what was
+// signed), or it couldn't be checked at all (no receipt, a broken link, a
+// service that didn't answer). Each says so plainly; the exact reason is folded below.
+const unreachable = error => error instanceof TypeError || /^(NVIDIA (signing keys|attestation service)|Intel|collateral)|fetch|network|timed? ?out|abort/i.test(error.message);
+
+function unchecked(plain, reason) {
+  result.hidden = false;
+  result.className = "card result unchecked";
+  result.innerHTML = `<p class="verdict">Couldn't check</p><p>${escape(plain)}</p>${reason ? `<details><summary>Details</summary><p>${escape(reason)}</p></details>` : ""}`;
+}
+
+function failed(reason) {
+  result.hidden = false;
+  result.className = "card result failed";
+  result.innerHTML = `<p class="verdict">Not verified</p><p>This receipt doesn't match what was signed: something in it was changed, or it wasn't made by the reviewer and enclaves it names.</p><details><summary>What failed</summary><p>${escape(reason)}</p></details>`;
+}
+
 async function check(text, label, options) {
+  try {
+    JSON.parse(text);
+  } catch {
+    return unchecked(`${label} isn't a receipt: receipts are JSON files, like the run's private-review-receipt.json.`);
+  }
   result.hidden = false;
   result.className = "card result running";
   result.innerHTML = `<p>Checking ${escape(label)}: verifying the Intel quotes, NVIDIA's verdict and every signature…</p>`;
@@ -149,13 +190,15 @@ async function check(text, label, options) {
     result.className = "card result ok";
     result.innerHTML = `
       <p class="verdict">Verified</p>
+      <p>Read only inside attested enclaves, and every answer the review used was signed by the model's enclave. Each check, exactly:</p>
       <ul class="checks">
         ${claims.map(([claim, text]) => `<li><strong>${escape(claim)}:</strong> ${code(text)}</li>`).join("")}
       </ul>
       <dl>${subject}<dt>model</dt><dd><code>${escape(receipt.model)}</code></dd><dt>created</dt><dd>${escape(receipt.created_at)}</dd><dt>receipt sha256</dt><dd><code>${escape(sha256)}</code></dd></dl>`;
   } catch (error) {
-    result.className = "card result failed";
-    result.innerHTML = `<p class="verdict">Not verified</p><p>${escape(error.message)}</p>`;
+    if (unreachable(error)) unchecked("A service the check relies on (Intel, NVIDIA or OutLayer) didn't answer. Try again in a minute.", error.message);
+    else if (/^unknown receipt version/.test(error.message)) unchecked(`${label} isn't a receipt this checker knows.`, error.message);
+    else failed(error.message);
   }
 }
 
@@ -181,8 +224,8 @@ seal.addEventListener("click", async () => {
     note.textContent = `Verified in ${((performance.now() - started) / 1000).toFixed(1)} s, here in your browser.`;
   } catch (error) {
     seal.classList.add("failed");
-    seal.querySelector("span").textContent = "Not verified";
-    note.textContent = error.message;
+    seal.querySelector("span").textContent = unreachable(error) ? "Couldn't check" : "Not verified";
+    note.textContent = unreachable(error) ? "A service the check relies on didn't answer. Try again in a minute, or use the checker below." : error.message;
   } finally {
     seal.classList.remove("checking");
     seal.disabled = false;
@@ -193,27 +236,34 @@ seal.addEventListener("click", async () => {
 // the receipt is fetched from OutLayer's public storage, and the salt and
 // subject (in the fragment, which never reaches a server) open its commitment.
 async function checkLinked() {
+  if (!location.hash.startsWith("#check&")) return;
   const params = new URLSearchParams(location.hash.replace(/^#check&?/, ""));
   const [sha, project] = [params.get("receipt"), params.get("project")];
   if (!sha || !project) return;
   document.getElementById("check")?.scrollIntoView();
+  let subject;
   try {
-    const url = `https://api.outlayer.ai/public/storage/get?project=${encodeURIComponent(project)}&key=${encodeURIComponent(`receipt:${sha}`)}&format=raw`;
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`no receipt published at ${project} under ${sha} (${response.status})`);
-    const text = await response.text();
-    const subject = params.get("subject") && JSON.parse(atob(params.get("subject").replace(/-/g, "+").replace(/_/g, "/")));
-    await check(text, "the receipt this review links", { salt: params.get("salt") ?? undefined, subject: subject || undefined, expectSha256: sha });
-  } catch (error) {
-    result.hidden = false;
-    result.className = "card result failed";
-    result.innerHTML = `<p class="verdict">Not verified</p><p>${escape(error.message)}</p>`;
+    subject = params.get("subject") && JSON.parse(atob(params.get("subject").replace(/-/g, "+").replace(/_/g, "/")));
+  } catch {
+    return unchecked("This link is incomplete: copy the whole link from the review and open it again.");
   }
+  let response;
+  try {
+    response = await fetch(`https://api.outlayer.ai/public/storage/get?project=${encodeURIComponent(project)}&key=${encodeURIComponent(`receipt:${sha}`)}&format=raw`);
+  } catch (error) {
+    return unchecked("OutLayer, where the receipt is published, didn't answer. Try again in a minute.", error.message);
+  }
+  if (!response.ok) return unchecked("No receipt is published under this link: check that it was copied whole.", `${project}, receipt ${sha}: ${response.status}`);
+  await check(await response.text(), "the receipt this review links", { salt: params.get("salt") ?? undefined, subject: subject || undefined, expectSha256: sha });
 }
 checkLinked();
+// A review's link opened in a tab already on this page.
+addEventListener("hashchange", checkLinked);
 
-// GitHub sends people here after they install the App.
-if (location.hash === "#installed") {
+// GitHub sends people here after they install the App, or change which
+// repositories it can see: to its Setup URL (…/#installed), with
+// installation_id and setup_action added after it, before or after the "#".
+if (/^#installed\b/.test(location.hash) || /[?&#]setup_action=(install|update)\b/.test(location.href)) {
   const banner = $("#installed-banner");
   banner.hidden = false;
   banner.scrollIntoView();

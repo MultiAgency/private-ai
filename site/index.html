@@ -41,7 +41,7 @@
     <section class="hero" aria-labelledby="title">
       <div class="hero-copy">
         <h1 id="title">Private Investigator</h1>
-        <p class="lede">A second pair of private eyes on your pull requests. Your code is read only inside hardware enclaves that prove what they run, and every review comes with a receipt anyone can check.</p>
+        <p class="lede">AI code review that proves your code stayed private. Your code is read only inside hardware enclaves that prove what they run, and every review comes with a receipt anyone can check.</p>
         <div class="actions">
           <a class="button primary" href="https://github.com/apps/private-investigator/installations/new">Install on GitHub</a>
           <a class="button" href="#setup">Run it as an Action</a>
@@ -57,14 +57,14 @@
           </div>
           <div class="seal-row">
             <button type="button" class="seal" id="seal"><span>Check the seal</span></button>
-            <p class="seal-note" id="seal-note">Verifies this review's receipt in your browser: Intel's quotes, NVIDIA's verdict and every signature.</p>
+            <p class="seal-note" id="seal-note" aria-live="polite">Verifies this review's receipt in your browser: Intel's quotes, NVIDIA's verdict and every signature.</p>
           </div>
           <ol class="seal-checks" id="seal-checks" hidden></ol>
         </div>
       </figure>
     </section>
 
-    <p class="banner" id="installed-banner" hidden><strong>You're set.</strong> Open a pull request or mark one ready for review, or comment <code>/review</code> on one. The <em>Private Investigator</em> check appears within seconds, and the review lands a few minutes later, with its receipt.</p>
+    <p class="banner" id="installed-banner" hidden><strong>You're set.</strong> Nothing runs until a pull request asks: open one, mark one ready for review, or comment <code>/review</code> on an open one. The <em>Private Investigator</em> check appears on it within seconds, and the review lands a few minutes later, with its receipt.</p>
 
     <section id="ways" aria-labelledby="ways-title">
       <div class="section-head">
@@ -72,7 +72,7 @@
         <p>The same review and the same receipts, run where you prefer.</p>
       </div>
       <ul class="limits">
-        <li><h3>The GitHub App</h3><p class="muted">Install it and pick the repositories: nothing else to set up. It reviews a pull request when it opens or leaves draft, and again when someone with write access comments <code>/review</code>. Your code is fetched and read only inside an attested <a href="https://outlayer.ai">OutLayer</a> enclave, running our published build. Free for 10 reviews per installation a month.</p><p><a class="button primary" href="https://github.com/apps/private-investigator/installations/new">Install on GitHub</a></p></li>
+        <li><h3>The GitHub App</h3><p class="muted">Install it and pick the repositories: nothing else to set up. It reviews a pull request when it opens or leaves draft; later pushes, when someone with write access comments <code>/review</code> or presses Re-run on its check. Your code is fetched and read only inside an attested <a href="https://outlayer.ai">OutLayer</a> enclave, running our published build. Free for 10 reviews per installation a month, from a shared monthly pool: when either runs out, the check says so, and reviews resume on the 1st.</p><p><a class="button primary" href="https://github.com/apps/private-investigator/installations/new">Install on GitHub</a></p></li>
         <li><h3>The GitHub Action</h3><p class="muted">Runs on your own GitHub runner, which already has your code, with your own NEAR AI key, so not even an enclave of ours touches it. About ten minutes to set up the first time.</p><p><a class="button" href="#setup">Set it up</a></p></li>
       </ul>
     </section>
@@ -97,9 +97,9 @@
         <p>About ten minutes the first time, mostly creating the NEAR AI account, then two minutes per repository. Enter it here, and the steps below fill in.</p>
       </div>
       <form class="card fields" onsubmit="return false">
-        <label>Repository <input id="repo" placeholder="owner/name" autocomplete="off" spellcheck="false"></label>
+        <label>Repository <input id="repo" placeholder="owner/name" autocomplete="off" spellcheck="false" aria-describedby="repo-error"><span class="field-error" id="repo-error" hidden>Use owner/name, as in github.com/owner/name.</span></label>
         <label>Default branch <input id="branch" value="main" autocomplete="off" spellcheck="false"></label>
-        <label class="wide">Model <input id="model" value="z-ai/glm-5.3-flash" autocomplete="off" spellcheck="false"></label>
+        <label class="wide">Model <input id="model" value="z-ai/glm-5.3-flash" autocomplete="off" spellcheck="false" aria-describedby="model-error"><span class="field-error" id="model-error" hidden>Model ids look like org/model. This one is left out of the workflow, so it uses the default.</span></label>
         <p class="muted hint">Any NEAR AI Cloud model that passes the checks. Today that is <code>z-ai/glm-5.3-flash</code>; the Qwen models pass only with the option below. <code>npm run models</code> in the <a href="https://github.com/MultiAgency/private-ai">source</a> lists them live. A model that fails stops the review before any code is sent.</p>
         <label class="checkbox"><input type="checkbox" id="unpatched"><span>Allow a model whose Intel platform update is pending. A weaker guarantee: every review and receipt says so.</span></label>
         <label class="checkbox"><input type="checkbox" id="forks"><span>Pull requests from forks: anyone with write access can start a review by commenting <code>/review</code></span></label>
@@ -146,13 +146,13 @@
     <section id="check" aria-labelledby="check-title">
       <div class="section-head">
         <h2 id="check-title">Check a receipt</h2>
-        <p>The same checks as <code>node core/verify.mjs</code>, run in your browser: the Intel quotes against Intel's current collateral, NVIDIA's verdict against NVIDIA's published keys, and every response signature.</p>
+        <p>The same checks as <code>node core/verify.mjs</code>, run in your browser: the Intel quotes against Intel's current collateral, NVIDIA's verdict against the NVIDIA key that signed it (checked back to NVIDIA's certificate authority), and every response signature.</p>
       </div>
       <div class="card">
         <div class="drop" id="drop">
           <p>Drop a <code>private-review-receipt.json</code> here, or</p>
           <div class="actions">
-            <label class="button">Choose a file <input type="file" id="receipt-file" accept=".json,application/json" hidden></label>
+            <label class="button file">Choose a file <input type="file" id="receipt-file" accept=".json,application/json" class="visually-hidden"></label>
             <button type="button" class="button primary" id="check-sample">Check the sample receipt</button>
           </div>
         </div>
@@ -166,7 +166,8 @@
         <p>Never your code or its review. This much, and no more:</p>
       </div>
       <ul class="limits">
-        <li><h3>Event notices</h3><p class="muted">GitHub sends its notices of pull request events (titles, descriptions, who pushed) to our relay, which forwards only ids to the enclave and keeps nothing. <a href="https://github.com/MultiAgency/private-ai/tree/main/relay">Its source</a> is public.</p></li>
+        <li><h3>Event notices</h3><p class="muted">GitHub sends its notices of pull request events (titles, descriptions, who pushed) to our relay, which forwards only ids to the enclave, and holds those only while a review runs. <a href="https://github.com/MultiAgency/private-ai/tree/main/relay">Its source</a> is public.</p></li>
+        <li><h3>Public receipts</h3><p class="muted">Each review's receipt is published in OutLayer's public storage: hashes, signatures, attestations, its count of new findings, and a commitment to the pull request that only the review's link opens. Never your repository's name, code or review.</p></li>
         <li><h3>Counts and timing</h3><p class="muted">How many reviews each installation runs (for the free tier), and when. OutLayer sees when each step runs and how large its requests are.</p></li>
       </ul>
     </section>

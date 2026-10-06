@@ -61,7 +61,11 @@ export function eventInput(request) {
   return { event: { ...request, nonce: hex(crypto.getRandomValues(new Uint8Array(16))) } };
 }
 
-const RETRIES = 3;
+// Calls on one input before giving up. A step whose runs keep getting killed
+// fails, and says so on its check run, only on the call after
+// app/src/job.rs STEP_RETRIES of them; any fewer, and the check would be
+// left saying "Following leads" for good (test/relay.test.mjs keeps them in step).
+export const RETRIES = 4;
 /** Inputs a pull request may have waiting; more are dropped (a flood of requests). */
 export const MAX_QUEUED = 10;
 

@@ -4,7 +4,9 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
 
-import { MAX_QUEUED, driver, eventInput, reviewRequest, signedByGitHub } from "../relay/relay.mjs";
+import { readFileSync } from "node:fs";
+
+import { MAX_QUEUED, RETRIES, driver, eventInput, reviewRequest, signedByGitHub } from "../relay/relay.mjs";
 
 const secret = "webhook-secret";
 const sign = body => `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
@@ -89,15 +91,22 @@ test("a failed or empty call is retried with backoff, then given up", async () =
   await d.enqueue({ event: 1 });
   await d.enqueue({ event: 2 });
   store.fired();
+  for (let tries = 1; tries < RETRIES; tries++) {
+    await d.alarm();
+    assert.equal(store.queue()[0].tries, tries, "a run that returned no output is retried");
+    assert.equal(store.fired(), 1_000 + 30_000 * tries);
+  }
   await d.alarm();
-  assert.equal(store.queue()[0].tries, 1, "a run that returned no output is retried");
-  assert.equal(store.fired(), 31_000);
-  await d.alarm();
-  assert.equal(store.fired(), 61_000);
-  await d.alarm();
-  assert.deepEqual(store.queue().map(i => i.input), [{ event: 2 }], "given up after 3 tries, and the next request goes on");
+  assert.deepEqual(store.queue().map(i => i.input), [{ event: 2 }], `given up after ${RETRIES} tries, and the next request goes on`);
   assert.match(logs[0], /gave up/);
   assert.equal(store.fired(), 1_000);
+});
+
+test("the relay calls a failing step often enough for the App to report it stopped", () => {
+  const job = readFileSync(new URL("../app/src/job.rs", import.meta.url), "utf8");
+  const retries = Number(job.match(/pub const STEP_RETRIES: u64 = (\d+);/)[1]);
+  // The App fails a step on the call after `retries` killed runs, counting the first.
+  assert.ok(RETRIES >= retries + 2, `relay RETRIES ${RETRIES} must be at least STEP_RETRIES + 2 (${retries + 2})`);
 });
 
 test("a pull request's queue is bounded", async () => {
