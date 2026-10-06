@@ -103,3 +103,15 @@ fn a_tree_past_the_budget_is_refused() {
     assert!(Repo::from_tarball(&gzipped, 1_000_000).is_err_and(|e| private_investigator::failure::Failure::of(&e) == private_investigator::failure::Failure::TooLarge));
     assert!(Repo::from_tarball(&gzipped, 1_200_000).is_ok());
 }
+
+#[test]
+fn a_pattern_that_backtracks_forever_ends_as_no_match() {
+    // The Action kills a runaway grep after a timeout (review/repo.mjs); here
+    // fancy-regex's own backtrack limit ends it, so the search still returns.
+    let mut b = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
+    let line = format!("{}!\n", "a".repeat(64));
+    b.append(&header(b"owner-repo-abc123/line.txt", tar::EntryType::Regular, line.len() as u64), line.as_bytes()).unwrap();
+    let repo = Repo::from_tarball(&b.into_inner().unwrap().finish().unwrap(), usize::MAX).unwrap();
+    assert_eq!(repo.call("grep", &json!({ "pattern": "^(a+)+$" })), "no matches");
+    assert!(repo.call("grep", &json!({ "pattern": "^a+!$" })).starts_with("line.txt:1: "));
+}
