@@ -61,30 +61,62 @@ export function eventInput(request) {
   return { event: { ...request, nonce: hex(crypto.getRandomValues(new Uint8Array(16))) } };
 }
 
-// The queue of OutLayer inputs one pull request's driver works through.
 const RETRIES = 3;
 /** Inputs a pull request may have waiting; more are dropped (a flood of requests). */
 export const MAX_QUEUED = 10;
 
-/** The queue with a new request added, or null when it is full. */
-export function enqueued(queue, input) {
-  return queue.length >= MAX_QUEUED ? null : [...queue, { input, tries: 0 }];
-}
-
 /**
- * The queue after a call on its head: the head is done, retried, or followed
- * by the job's next step. `queue` is read after the call, since requests may
- * have joined it meanwhile; they only ever join at the end, so the head is
- * still first. Returns the queue, when to call next (ms from now, or null),
- * and a line to log (ids only).
+ * One pull request's driver: a queue of OutLayer inputs, worked through one
+ * call per alarm, and again while the output says there is more.
+ *
+ * - `storage`: `get`/`put` of the queue, and `getAlarm`/`setAlarm` (ms since
+ *   the epoch), as a Durable Object's storage has them.
+ * - `call(input)`: one OutLayer call; it resolves to the run's output and
+ *   throws when there is none.
+ * - `log(line)`: ids only.
+ *
+ * Retrying any input is safe: the enclave dedupes a repeated event (its
+ * request marker) and a repeated step (a run that never answered counts once,
+ * app/src/job.rs `in_flight`).
  */
-export function settled(queue, { output, error }) {
-  const [head, ...rest] = queue;
-  if (error) {
-    if (head.tries + 1 < RETRIES) return { queue: [{ ...head, tries: head.tries + 1 }, ...rest], next: 30_000 * (head.tries + 1) };
-    return { queue: rest, next: rest.length ? 0 : null, log: `gave up on an input after ${RETRIES} tries: ${error}` };
-  }
-  const after = output?.more === true && typeof output.job === "string" ? [{ input: { step: output.job }, tries: 0 }, ...rest] : rest;
-  const log = output?.job && `job ${output.job}: ${output.more ? "more" : output.failed ? `failed (${output.failed})` : "done"}`;
-  return { queue: after, next: after.length ? 0 : null, log };
+export function driver({ storage, call, log = () => {}, now = Date.now }) {
+  return {
+    /** Queues an input and wakes the driver, unless the queue is full. */
+    async enqueue(input) {
+      const queue = (await storage.get("queue")) ?? [];
+      if (queue.length >= MAX_QUEUED) return log("a pull request's queue is full; a request was dropped");
+      await storage.put("queue", [...queue, { input, tries: 0 }]);
+      if (!(await storage.getAlarm())) await storage.setAlarm(now());
+    },
+
+    /** One call on the queue's head, then the queue as the call left it. */
+    async alarm() {
+      const head = ((await storage.get("queue")) ?? [])[0];
+      if (!head) return;
+      let output;
+      let error;
+      try {
+        output = await call(head.input);
+        if (output == null) throw new Error("the run returned no output");
+      } catch (e) {
+        error = e.message;
+      }
+      // Read again: requests that arrived during the call joined the queue's
+      // end, so the head is still first.
+      const [, ...rest] = (await storage.get("queue")) ?? [head];
+      let queue = rest;
+      let delay = 0;
+      if (error && head.tries + 1 < RETRIES) {
+        queue = [{ ...head, tries: head.tries + 1 }, ...rest];
+        delay = 30_000 * (head.tries + 1);
+      } else if (error) {
+        log(`gave up on an input after ${RETRIES} tries: ${error}`);
+      } else {
+        if (output.more === true && typeof output.job === "string") queue = [{ input: { step: output.job }, tries: 0 }, ...rest];
+        if (output.job) log(`job ${output.job}: ${output.more ? "more" : output.failed ? `failed (${output.failed})` : "done"}`);
+      }
+      await storage.put("queue", queue);
+      if (queue.length) await storage.setAlarm(now() + delay);
+    },
+  };
 }

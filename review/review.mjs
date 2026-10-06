@@ -118,10 +118,15 @@ export const isOurReview = review => spec.authors.includes(review.user?.login)
  * report what is new instead of repeating itself on every push.
  */
 export async function earlierFindings(gh, number) {
-  const ours = new Set((await gh.reviews(number)).filter(isOurReview).map(r => r.id));
-  if (ours.size === 0) return [];
+  const reviews = await gh.reviews(number);
+  return reviews.some(isOurReview) ? ownFindings(reviews, await gh.reviewComments(number)) : [];
+}
+
+/** The inline findings of this reviewer's own reviews, once each (app/src/review.rs `own_findings`). */
+export function ownFindings(reviews, comments) {
+  const ours = new Set(reviews.filter(isOurReview).map(r => r.id));
   const seen = new Set();
-  return (await gh.reviewComments(number))
+  return comments
     .filter(c => ours.has(c.pull_request_review_id))
     .map(c => ({ path: c.path, body: c.body }))
     .filter(f => !seen.has(`${f.path}\n${f.body}`) && seen.add(`${f.path}\n${f.body}`));
@@ -223,10 +228,10 @@ async function main() {
   const repo = values.repo ?? env("GITHUB_REPOSITORY");
   const dryRun = values["dry-run"] ?? false;
   const receiptPath = resolve(values.receipt ?? "private-review-receipt.json");
-  const model = process.env.MODEL || "z-ai/glm-5.3-flash";
-  const rubricPaths = (process.env.RUBRIC || "REVIEW.md,AGENTS.md").split(",").map(p => p.trim()).filter(Boolean);
-  const maxTurns = Number(process.env.MAX_TURNS || "30");
-  const passes = Number(process.env.PASSES || "1");
+  const model = process.env.MODEL || spec.defaults.model;
+  const rubricPaths = (process.env.RUBRIC || spec.defaults.rubric.join(",")).split(",").map(p => p.trim()).filter(Boolean);
+  const maxTurns = Number(process.env.MAX_TURNS || spec.defaults.max_turns);
+  const passes = Number(process.env.PASSES || spec.defaults.passes);
   const allowUnpatchedModel = process.env.ALLOW_UNPATCHED_MODEL === "true";
   if (!Number.isInteger(passes) || passes < 1 || passes > 5) throw new Error(`PASSES must be 1 to 5, not ${process.env.PASSES}`);
   const gh = github(env("GITHUB_TOKEN"), repo);

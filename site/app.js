@@ -3,6 +3,7 @@
 // `node core/verify.mjs`, in the browser.
 import { provenClaims, verifyReceipt } from "../core/receipt.mjs";
 import published from "../app/builds.json" with { type: "json" };
+import review from "../review/review.json" with { type: "json" };
 
 const $ = selector => document.querySelector(selector);
 const escape = text => String(text).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
@@ -19,7 +20,7 @@ fetch("https://api.github.com/repos/MultiAgency/private-ai/commits/main", { head
 
 const pinned = path => `MultiAgency/private-ai/${path}@${actionRef}${actionRef === "main" ? "" : ` # ${actionRef.slice(0, 7)}`}`;
 
-const DEFAULT_MODEL = "z-ai/glm-5.3-flash";
+const DEFAULT_MODEL = review.defaults.model;
 
 // The review step's inputs: the key, and the model and policy when they differ
 // from the defaults. A model id is a short path, so anything else is dropped.

@@ -132,11 +132,15 @@ impl Repo {
         Ok(())
     }
 
-    /// Whether a comment's author may start a review: write access or more, as
-    /// the Action's gate requires (review/gate.mjs).
-    pub fn comment_author_may_review(&self, comment: u64) -> Result<bool> {
+    /// Whether a comment is a `/review` on this pull request whose author may
+    /// start a review: write access or more, as the Action's gate requires
+    /// (review/gate.mjs). The relay passes only the comment's id, so all of it
+    /// is read here.
+    pub fn may_review(&self, number: u64, comment: u64) -> Result<bool> {
         let comment = self.get(&format!("/issues/comments/{comment}"), "comment")?;
-        let Some(login) = comment["user"]["login"].as_str() else { return Ok(false) };
+        let on_this = comment["issue_url"].as_str().is_some_and(|u| u.ends_with(&format!("/repos/{}/issues/{number}", self.repo)));
+        let asks = comment["body"].as_str().is_some_and(|b| b.trim_start().starts_with("/review"));
+        let Some(login) = comment["user"]["login"].as_str().filter(|_| on_this && asks) else { return Ok(false) };
         let permission = match self.get(&format!("/collaborators/{}/permission", encode(login)), "permission") {
             Ok(p) => p,
             Err(e) if e.to_string().ends_with(": 404") => return Ok(false),

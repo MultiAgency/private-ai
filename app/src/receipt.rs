@@ -12,6 +12,7 @@ use crate::sign::{check_signature, sha256, signed_text};
 pub const RECEIPT_VERSION: u64 = 1;
 
 /// What a live attestation leaves for the receipt.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Evidence {
     pub nonce: String,
     pub report: Value,
@@ -19,26 +20,8 @@ pub struct Evidence {
     pub allow_unpatched_model: bool,
 }
 
-/// `subject` names what the run was about, e.g. a pull request and its commits.
-/// Returns the receipt text and its SHA-256.
-pub fn receipt(subject: &Value, model: &str, evidence: &Evidence, turns: &[Value], created_at: &str) -> (String, String) {
-    let text = serde_json::to_string_pretty(&json!({
-        "version": RECEIPT_VERSION,
-        "subject": subject,
-        "model": model,
-        "created_at": created_at,
-        "nonce": evidence.nonce,
-        "attestation": evidence.report,
-        "gpu_token": evidence.gpu_token,
-        "policy": { "allow_unpatched_model": evidence.allow_unpatched_model },
-        "turns": turns,
-    }))
-    .expect("receipt serializes");
-    let hash = sha256(text.as_bytes());
-    (text, hash)
-}
-
-/// Receipt version 2, written by the hosted App. Two differences from version 1:
+/// Receipt version 2, the one the hosted App writes. Two differences from
+/// version 1 (the Action's, core/receipt.mjs):
 /// - the pull request is not named, only committed to: `subject_sha256` is the
 ///   SHA-256 of `salt:canonical(subject)`, and the salt reaches only the review's
 ///   readers (the link in the review). The receipt is public; the repository may not be.

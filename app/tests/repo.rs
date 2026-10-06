@@ -100,6 +100,6 @@ fn a_file_over_the_limit_is_listed_but_never_held() {
 #[test]
 fn a_tree_past_the_budget_is_refused() {
     let gzipped = tarball_of(&[("a.txt", 600_000), ("b.txt", 600_000)]);
-    assert!(Repo::from_tarball(&gzipped, 1_000_000).is_err_and(|e| e.to_string() == private_investigator::repo::TOO_LARGE));
+    assert!(Repo::from_tarball(&gzipped, 1_000_000).is_err_and(|e| private_investigator::failure::Failure::of(&e) == private_investigator::failure::Failure::TooLarge));
     assert!(Repo::from_tarball(&gzipped, 1_200_000).is_ok());
 }

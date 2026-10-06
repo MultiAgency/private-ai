@@ -1,6 +1,6 @@
 //! The golden case test/review.test.mjs also checks: the hosted App's review
 //! text must be the Action's, byte for byte.
-use private_investigator::review::{check_submission, commentable_lines, system_prompt, user_prompt};
+use private_investigator::review::{check_submission, commentable_lines, merge_findings, own_findings, system_prompt, user_prompt};
 use serde_json::Value;
 
 #[test]
@@ -14,6 +14,11 @@ fn the_golden_case_matches_the_action() {
     assert_eq!(commentable_lines(&list("files")), expected);
     for case in list("submissions") {
         assert_eq!(check_submission(&case[0]), case[1].as_str().map(String::from), "{}", case[0]);
+    }
+    let own = &c["own_findings"];
+    assert_eq!(own_findings(own["reviews"].as_array().unwrap(), own["comments"].as_array().unwrap()), *own["expected"].as_array().unwrap());
+    for case in list("merges") {
+        assert_eq!(merge_findings(case["lists"].as_array().unwrap()), *case["expected"].as_array().unwrap(), "{}", case["lists"]);
     }
 }
 

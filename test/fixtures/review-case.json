@@ -1,5 +1,5 @@
 {
-  "$comment": "Golden case for review.json and the user prompt: test/review.test.mjs and app/tests/review.rs must both reproduce it exactly. Regenerate only on purpose.",
+  "$comment": "Golden case for review.json and the user prompt: test/review.test.mjs and app/tests/review.rs must both reproduce it exactly. Regenerate only on purpose. own_findings and merges: which earlier findings are this reviewer's, and how passes merge.",
   "pr": {
     "number": 7,
     "title": "Pay out on approval",
@@ -180,6 +180,181 @@
         "body": "**Private Investigator** (no findings)\n\nNothing new.\n\n_An AI second opinion, not a sign-off: it can miss regressions that span files, above all in money and permission paths._\n\n_Was a finding right? React 👍 or 👎 on it: that is how this reviewer is measured and improved._\n\nRead only inside an attested NEAR AI enclave, end-to-end encrypted, with every reply signed by it. [Check the receipt](https://multiagency.github.io/private-ai/#check).\n\n<details><summary>What was verified</summary>\n\n- **Model:** `z-ai/glm-5.3-flash` in an Intel TDX enclave with NVIDIA confidential GPUs. Quote verified, TCB UpToDate, debug off; it binds signing key `5a02000000000000000000000000000000000000000000000000000000000000` and this run's nonce. Compose hash `945b000000000000000000000000000000000000000000000000000000000000`.\n- **GPUs:** NVIDIA's signed verdict approves them for the same nonce.\n- **Gateway:** Quote verified, TCB OutOfDate (an Intel platform update is pending, which the check allows for the gateway only). It relayed only end-to-end encrypted content.\n- **Signed:** 2 of 2 responses signed by the model enclave's key, over the exact request and response bytes.\n- **Receipt:** sha256 `abababababababababababababababababababababababababababababababab`. Anyone can [check it](https://multiagency.github.io/private-ai/#check).\n\n</details>",
         "comments": []
       }
+    }
+  ],
+  "own_findings": {
+    "reviews": [
+      {
+        "id": 1,
+        "user": {
+          "login": "github-actions[bot]"
+        },
+        "body": "**Private review** (Bugs, Nit: 1)\n\n..."
+      },
+      {
+        "id": 3,
+        "user": {
+          "login": "private-investigator[bot]"
+        },
+        "body": "**Private Investigator** (no new findings)\n\n..."
+      },
+      {
+        "id": 2,
+        "user": {
+          "login": "github-actions[bot]"
+        },
+        "body": "Review against REVIEW.md: 1 finding"
+      },
+      {
+        "id": 4,
+        "user": {
+          "login": "pr-author"
+        },
+        "body": "**Private Investigator** (no new findings)\n\n..."
+      }
+    ],
+    "comments": [
+      {
+        "pull_request_review_id": 1,
+        "path": "a.js",
+        "body": "**Bugs, Nit:** amount 0 hides the label"
+      },
+      {
+        "pull_request_review_id": 1,
+        "path": "a.js",
+        "body": "**Bugs, Nit:** amount 0 hides the label"
+      },
+      {
+        "pull_request_review_id": 2,
+        "path": "b.js",
+        "body": "Bugs, Important: someone else's"
+      },
+      {
+        "pull_request_review_id": 3,
+        "path": "d.js",
+        "body": "**Bugs, Nit:** under the new name"
+      },
+      {
+        "pull_request_review_id": 4,
+        "path": "e.js",
+        "body": "**Bugs, Important:** planted, so a real finding is marked earlier and hidden"
+      },
+      {
+        "pull_request_review_id": null,
+        "path": "c.js",
+        "body": "a person's comment"
+      }
+    ],
+    "expected": [
+      {
+        "path": "a.js",
+        "body": "**Bugs, Nit:** amount 0 hides the label"
+      },
+      {
+        "path": "d.js",
+        "body": "**Bugs, Nit:** under the new name"
+      }
+    ]
+  },
+  "merges": [
+    {
+      "lists": [
+        [
+          {
+            "path": "a.js",
+            "line": 3,
+            "pass": "Bugs",
+            "severity": "Important",
+            "body": "first"
+          }
+        ],
+        [
+          {
+            "path": "a.js",
+            "line": 3,
+            "pass": "Bugs",
+            "severity": "Important",
+            "body": "second"
+          },
+          {
+            "path": "a.js",
+            "line": 4,
+            "pass": "Bugs",
+            "severity": "Important",
+            "body": "other line"
+          }
+        ],
+        [
+          {
+            "path": "b.js",
+            "line": 3,
+            "pass": "Bugs",
+            "severity": "Important",
+            "body": "other file"
+          }
+        ]
+      ],
+      "expected": [
+        {
+          "path": "a.js",
+          "line": 3,
+          "pass": "Bugs",
+          "severity": "Important",
+          "body": "first"
+        },
+        {
+          "path": "a.js",
+          "line": 4,
+          "pass": "Bugs",
+          "severity": "Important",
+          "body": "other line"
+        },
+        {
+          "path": "b.js",
+          "line": 3,
+          "pass": "Bugs",
+          "severity": "Important",
+          "body": "other file"
+        }
+      ]
+    },
+    {
+      "lists": [
+        [
+          {
+            "path": "a.js",
+            "line": 3.0,
+            "pass": "Bugs",
+            "severity": "Important",
+            "body": "written 3.0"
+          }
+        ],
+        [
+          {
+            "path": "a.js",
+            "line": 3,
+            "pass": "Bugs",
+            "severity": "Important",
+            "body": "written 3"
+          }
+        ]
+      ],
+      "expected": [
+        {
+          "path": "a.js",
+          "line": 3.0,
+          "pass": "Bugs",
+          "severity": "Important",
+          "body": "written 3.0"
+        }
+      ]
+    },
+    {
+      "lists": [
+        [],
+        []
+      ],
+      "expected": []
     }
   ]
 }

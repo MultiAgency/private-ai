@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
 
-import { MAX_QUEUED, enqueued, eventInput, reviewRequest, settled, signedByGitHub } from "../relay/relay.mjs";
+import { MAX_QUEUED, driver, eventInput, reviewRequest, signedByGitHub } from "../relay/relay.mjs";
 
 const secret = "webhook-secret";
 const sign = body => `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
@@ -44,23 +44,67 @@ test("OutLayer's input carries ids and a fresh nonce, never names or text", () =
   assert.doesNotMatch(JSON.stringify(a), /secret|Secret|private|someone/);
 });
 
-test("a pull request's queue is bounded, and a call's outcome never loses requests that arrived during it", () => {
-  let queue = [];
-  for (let i = 0; i < MAX_QUEUED; i++) queue = enqueued(queue, { event: i });
-  assert.equal(enqueued(queue, { event: "flood" }), null);
+/** A Durable Object's storage, in memory, with its one alarm. */
+function storage() {
+  const data = new Map();
+  let alarm = null;
+  return {
+    get: async key => structuredClone(data.get(key)),
+    put: async (key, value) => { data.set(key, structuredClone(value)); },
+    getAlarm: async () => alarm,
+    setAlarm: async at => { alarm = at; },
+    fired: () => { const at = alarm; alarm = null; return at; },
+    queue: () => data.get("queue") ?? [],
+  };
+}
 
-  const head = { input: { event: 1 }, tries: 0 };
-  const arrived = { input: { event: 2 }, tries: 0 };
-  // The call ran while a request arrived; the queue read after it has both.
-  const more = settled([head, arrived], { output: { job: "j", more: true } });
-  assert.deepEqual(more.queue, [{ input: { step: "j" }, tries: 0 }, arrived]);
-  assert.equal(more.next, 0);
-  assert.deepEqual(settled([head, arrived], { output: { job: "j", more: false } }).queue, [arrived]);
-  const retried = settled([head, arrived], { error: "OutLayer 502" });
-  assert.deepEqual(retried.queue, [{ ...head, tries: 1 }, arrived]);
-  assert.equal(retried.next, 30_000);
-  const gaveUp = settled([{ ...head, tries: 2 }, arrived], { error: "OutLayer 502" });
-  assert.deepEqual(gaveUp.queue, [arrived]);
-  assert.match(gaveUp.log, /gave up/);
-  assert.equal(settled([head], { output: { job: "j", more: false } }).next, null);
+test("a driver steps a job until it is done, one call per alarm", async () => {
+  const store = storage();
+  const calls = [];
+  const outputs = [{ job: "j", more: true }, { job: "j", more: true }, { job: "j", more: false }];
+  const d = driver({ storage: store, call: async input => (calls.push(input), outputs.shift()), now: () => 0 });
+  await d.enqueue({ event: 1 });
+  while (store.fired() !== null) await d.alarm();
+  assert.deepEqual(calls, [{ event: 1 }, { step: "j" }, { step: "j" }]);
+  assert.deepEqual(store.queue(), []);
+});
+
+test("a request that arrives during a call is kept, behind the job's next step", async () => {
+  const store = storage();
+  let d;
+  d = driver({ storage: store, call: async input => {
+    if (input.event === 1) await d.enqueue({ event: 2 });
+    return input.event === 1 ? { job: "j", more: true } : { job: input.event ? "k" : "j", more: false };
+  }, now: () => 0 });
+  await d.enqueue({ event: 1 });
+  store.fired();
+  await d.alarm();
+  assert.deepEqual(store.queue().map(i => i.input), [{ step: "j" }, { event: 2 }]);
+});
+
+test("a failed or empty call is retried with backoff, then given up", async () => {
+  const store = storage();
+  const logs = [];
+  const d = driver({ storage: store, call: async () => undefined, log: line => logs.push(line), now: () => 1_000 });
+  await d.enqueue({ event: 1 });
+  await d.enqueue({ event: 2 });
+  store.fired();
+  await d.alarm();
+  assert.equal(store.queue()[0].tries, 1, "a run that returned no output is retried");
+  assert.equal(store.fired(), 31_000);
+  await d.alarm();
+  assert.equal(store.fired(), 61_000);
+  await d.alarm();
+  assert.deepEqual(store.queue().map(i => i.input), [{ event: 2 }], "given up after 3 tries, and the next request goes on");
+  assert.match(logs[0], /gave up/);
+  assert.equal(store.fired(), 1_000);
+});
+
+test("a pull request's queue is bounded", async () => {
+  const store = storage();
+  const logs = [];
+  const d = driver({ storage: store, call: async () => ({}), log: line => logs.push(line) });
+  for (let i = 0; i <= MAX_QUEUED; i++) await d.enqueue({ event: i });
+  assert.equal(store.queue().length, MAX_QUEUED);
+  assert.match(logs[0], /full/);
 });

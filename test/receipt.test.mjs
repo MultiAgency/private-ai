@@ -38,12 +38,22 @@ test("a receipt is checked under the policy it states", async () => {
   assert.equal(model.tcb, "OutOfDate");
 });
 
-// Version 2, as the hosted App writes it: the sample's real model evidence and
-// turns, run by a job whose OutLayer attestations are stubbed to what the
-// checker needs from them (outlayer.test.mjs checks real ones).
+// Version 2, as the hosted App writes it: the receipts app/tests/job.rs makes
+// by running the job on the sample's real model evidence and signed turns
+// (fixtures/receipt-v2-cases.json). The writer and this checker meet there;
+// OutLayer's attestations are stubbed to what the checker reads from them
+// (outlayer.test.mjs checks real ones).
+import { readFileSync } from "node:fs";
+
 import { canonical } from "../core/outlayer.mjs";
+import { provenClaims, subjectCommitment, turnHash } from "../core/receipt.mjs";
 import { sha256 } from "../core/sign.mjs";
-import { subjectCommitment, turnHash } from "../core/receipt.mjs";
+
+const { cases } = JSON.parse(readFileSync(new URL("fixtures/receipt-v2-cases.json", import.meta.url), "utf8"));
+const PROJECT = "hack.near/private-investigator";
+const BUILD = "5e".repeat(32);
+// As app/builds.json records a release.
+const published = [{ hash: BUILD, commit: "c0ffee".padEnd(40, "0"), clean: true, project: PROJECT }];
 
 test("hashes match the App's (app/tests/core.rs pins the same values)", () => {
   assert.equal(turnHash(JSON.parse(text).turns[0]), "3ee9d41764acc01a67aee289edc62ecd43f16231ca972123f473b6c3eeaeebc9");
@@ -51,90 +61,64 @@ test("hashes match the App's (app/tests/core.rs pins the same values)", () => {
   assert.equal(subjectCommitment("00112233445566778899aabbccddeeff", subject), "1713fd61b577b8dbe92fc4de33840d7f7d1c494908b33737395fc21ec322dc28");
 });
 
-// As app/builds.json records a release.
-const published = [{ hash: "5e".repeat(32), commit: "c0ffee".padEnd(40, "0"), clean: true, project: "hack.near/private-investigator" }];
-
-function v2(change = () => {}, wasm = "5e".repeat(32)) {
-  const v1 = JSON.parse(text);
-  const salt = "ab".repeat(16);
-  const subject = { pull_request: v1.subject.pull_request, base_sha: v1.subject.base_sha, head_sha: v1.subject.head_sha };
-  const hashes = v1.turns.map(turnHash);
-  const half = Math.ceil(hashes.length / 2);
-  const job = "f00d".repeat(8);
-  const { subject: _, ...rest } = v1;
-  const receipt = {
-    ...rest,
-    version: 2,
-    subject_sha256: subjectCommitment(salt, subject),
-    outlayer: {
-      project: "hack.near/private-investigator",
-      findings: 1,
-      runs: [
-        { call_id: "c1", output: { job, more: true } },
-        { call_id: "c2", output: { job, more: true, nonce: v1.nonce } },
-        { call_id: "c3", output: { job, more: true, turns: hashes.slice(0, half) } },
-        { call_id: "c4" },
-      ],
-    },
-  };
-  change(receipt);
-  const body = JSON.stringify(receipt, null, 2);
-  const lastOutput = { findings: 1, job, more: false, receipt_sha256: sha256(body), subject_sha256: receipt.subject_sha256, turns: hashes.slice(half) };
-  const outputs = [...receipt.outlayer.runs.slice(0, -1).map(r => r.output), lastOutput];
-  // Stub attestations: each binds its run's output, as OutLayer's does.
-  const records = Object.fromEntries(receipt.outlayer.runs.map((r, i) => [r.call_id, { project_id: receipt.outlayer.project, output_hash: sha256(canonical(outputs[i])), wasm_hash: wasm, timestamp: 1_791_000_000 }]));
-  // As verifyStep checks the attested record (outlayer.test.mjs checks the real one).
+/** A case's receipt, optionally edited, with the checker's options: each call's attestation as OutLayer would record it, for the build given. */
+function hosted(c, { edit, build = BUILD } = {}) {
+  const receipt = JSON.parse(c.receipt);
+  edit?.(receipt);
+  const body = edit ? JSON.stringify(receipt, null, 2) : c.receipt;
+  const records = Object.fromEntries(Object.entries(c.outputs).map(([call, output]) => [call, { project_id: PROJECT, wasm_hash: build, output_hash: sha256(canonical(output)), timestamp: 1_791_000_000 }]));
+  // As verifyStep checks the attested record.
   const checkStep = async (record, { project, wasmHashes, output }) => {
-    if (record.project_id !== project) throw new Error("wrong project");
+    if (record.project_id !== project) throw new Error(`ran for project ${record.project_id}, not ${project}`);
     if (!wasmHashes.includes(record.wasm_hash)) throw new Error(`ran WASM ${record.wasm_hash}, not a published build`);
     if (sha256(canonical(output)) !== record.output_hash) throw new Error("output does not match the attested hash");
     return { wasmHash: record.wasm_hash };
   };
-  return { body, salt, subject, opts: { ...options, published, getRecord: async id => records[id], approvedFor: async () => [], checkStep } };
+  return { body, opts: { ...options, published, getRecord: async id => records[id], approvedFor: async () => [], checkStep } };
 }
 
-test("a version 2 receipt verifies: model evidence, every run, and the commitment the review's salt opens", async () => {
-  const { body, salt, subject, opts } = v2();
-  const { runs, subjectConfirmed, model } = await verifyReceipt(body, { ...opts, salt, subject });
-  assert.equal(model.tcb, "UpToDate");
-  assert.equal(runs.steps.length, 4);
-  assert.deepEqual(runs.builds, published);
-  assert.equal(subjectConfirmed, true);
-  await assert.rejects(verifyReceipt(body, { ...opts, salt: "00".repeat(16), subject }), /not for this pull request/);
-  await assert.rejects(verifyReceipt(body, { ...opts, expectSha256: "0".repeat(64) }), /not the one the review cites/);
-});
+for (const c of cases) {
+  test(`the App's receipt verifies (${c.name}): model evidence, every run, and the commitment the review's salt opens`, async () => {
+    const { body, opts } = hosted(c);
+    const { runs, subjectConfirmed, model, receipt } = await verifyReceipt(body, { ...opts, salt: c.salt, subject: c.subject, expectSha256: c.sha256 });
+    assert.equal(model.tcb, "UpToDate");
+    assert.equal(runs.steps.length, Object.keys(c.outputs).length);
+    assert.deepEqual(runs.builds, published);
+    assert.equal(subjectConfirmed, true);
+    assert.doesNotMatch(c.receipt, /secret-repo/, "the public receipt does not name the repository");
+    await assert.rejects(verifyReceipt(body, { ...opts, salt: "00".repeat(16), subject: c.subject }), /not for this pull request/);
+    await assert.rejects(verifyReceipt(body, { ...opts, expectSha256: "0".repeat(64) }), /not the one the review cites/);
+    const reader = provenClaims({ model: receipt.model, attestation: { model, gateway: model }, turns: receipt.turns.length, runs }).find(([claim]) => claim === "Reader")[1];
+    assert.match(reader, new RegExp(`build \`${BUILD}\`, built from commit \`c0ffee0{34}\``));
+  });
+}
 
-test("a version 2 receipt fails when its runs do not prove its parts", async () => {
-  const swapTurns = r => { r.outlayer.runs[2].output.turns = [...r.outlayer.runs[2].output.turns.slice(1), "0".repeat(64)]; };
-  const loseNonce = r => { delete r.outlayer.runs[1].output.nonce; };
-  const twoJobs = r => { r.outlayer.runs[1].output.job = "other"; };
-  const noRuns = r => { r.outlayer.runs = []; };
-  for (const [change, message] of [[swapTurns, /turns do not match/], [loseNonce, /nonce/], [twoJobs, /not one job/], [noRuns, /no OutLayer runs/]]) {
-    const { body, opts } = v2(change);
+test("the App's receipt fails when its runs do not prove its parts", async () => {
+  const [c] = cases;
+  const withTurns = r => r.outlayer.runs.find(run => run.output?.turns?.length);
+  const edits = [
+    [r => { withTurns(r).output.turns[0] = "0".repeat(64); }, /turns do not match/],
+    [r => { delete r.outlayer.runs.find(run => run.output?.nonce).output.nonce; }, /nonce/],
+    [r => { r.outlayer.runs[1].output.job = "other"; }, /not one job/],
+    [r => { r.outlayer.runs = []; }, /no OutLayer runs/],
+    // An edit after the fact changes the receipt's hash, which the last run attested.
+    [r => { r.outlayer.findings = 0; }, /output does not match/],
+  ];
+  for (const [edit, message] of edits) {
+    const { body, opts } = hosted(c, { edit });
     await assert.rejects(verifyReceipt(body, opts), message);
   }
-  // An edit after the fact changes the receipt's hash, which the last run attested.
-  const { body, opts } = v2();
-  const edited = JSON.stringify({ ...JSON.parse(body), outlayer: { ...JSON.parse(body).outlayer, findings: 0 } }, null, 2);
-  await assert.rejects(verifyReceipt(edited, opts), /output does not match/);
 });
 
-test("a version 2 receipt counts only as the published project's published builds", async () => {
+test("the App's receipt counts only as the published project's published builds", async () => {
+  const [c] = cases;
   // Another project, running its own code, can attest whatever outputs it likes.
-  const elsewhere = v2(r => { r.outlayer.project = "attacker.near/fake-investigator"; });
+  const elsewhere = hosted(c, { edit: r => { r.outlayer.project = "attacker.near/fake-investigator"; } });
   await assert.rejects(verifyReceipt(elsewhere.body, elsewhere.opts), /not one whose builds are published/);
   // Our project, running a build no release recorded.
-  const unpublished = v2(() => {}, "de".repeat(32));
+  const unpublished = hosted(c, { build: "de".repeat(32) });
   await assert.rejects(verifyReceipt(unpublished.body, unpublished.opts), /not a published build/);
   // A checker with nothing to check against refuses rather than trusting the receipt.
-  const { body, opts } = v2();
+  const { body, opts } = hosted(c);
   await assert.rejects(verifyReceipt(body, { ...opts, published: undefined }), /no published builds/);
-});
-
-test("the Reader claim names the build and the commit it rebuilds from", async () => {
-  const { provenClaims } = await import("../core/receipt.mjs");
-  const { body, opts } = v2();
-  const { receipt, model, gateway, runs } = await verifyReceipt(body, opts);
-  const reader = provenClaims({ model: receipt.model, attestation: { model, gateway }, turns: receipt.turns.length, runs }).find(([claim]) => claim === "Reader")[1];
-  assert.match(reader, new RegExp(`build \`${"5e".repeat(32)}\`, built from commit \`c0ffee0{34}\``));
 });

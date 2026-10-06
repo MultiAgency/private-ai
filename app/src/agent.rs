@@ -128,7 +128,7 @@ impl Agent {
 
     fn next(&self) -> Result<Next> {
         if self.exhausted() {
-            bail!("nothing submitted after {} turns", self.max_turns);
+            return Err(crate::failure::Failure::NoSubmission.into());
         }
         Ok(Next::Continue)
     }

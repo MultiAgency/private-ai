@@ -4,6 +4,13 @@
   "legacy_headings": [
     "**Private review**"
   ],
+  "$defaults": "How a review runs unless told otherwise, in the Action (action.yml repeats these for its readers; a test keeps them equal), the App and the eval.",
+  "defaults": {
+    "model": "z-ai/glm-5.3-flash",
+    "passes": 3,
+    "max_turns": 30,
+    "rubric": ["REVIEW.md", "AGENTS.md"]
+  },
   "$authors": "Who posts this reviewer's reviews: the App, and the Action through the workflow's token. A review counts as this reviewer's own only from one of them, so no one else can plant earlier findings.",
   "authors": [
     "private-investigator[bot]",

@@ -70,7 +70,7 @@ pub struct Options<'a> {
 }
 
 /// What the receipt and the review state about one verified report.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Summary {
     pub tcb: String,
     pub advisories: Vec<String>,

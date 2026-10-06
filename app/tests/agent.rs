@@ -54,7 +54,7 @@ fn an_incomplete_submission_is_sent_back_the_model_is_told_to_wrap_up_and_the_ca
     let last: Vec<&Value> = agent.messages.iter().rev().take(2).map(|m| &m["content"]).collect();
     assert_eq!(last, vec!["1 turn left: call submit now with what you have.", "error: submit needs an answer"]);
     let end = agent.apply(&json!({ "content": "done" }), Some("stop"), record(2), &finish, &mut run);
-    assert_eq!(end.err().unwrap().to_string(), "nothing submitted after 2 turns");
+    assert_eq!(private_investigator::failure::Failure::of(&end.err().unwrap()), private_investigator::failure::Failure::NoSubmission);
 }
 
 #[test]

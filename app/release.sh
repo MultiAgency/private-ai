@@ -26,7 +26,7 @@ PROJECT=${2:-private-investigator}
 PROFILE=private-investigator
 cd "$(dirname "$0")/.."
 
-SOURCE="app/build.sh app/src app/Cargo.toml app/manifest.json Cargo.toml Cargo.lock rust-toolchain.toml review/review.json"
+. app/source.sh
 DIRTY=$(git status --porcelain -- $SOURCE)
 if [ -n "$DIRTY" ] && [ "$ALLOW_DIRTY" = no ]; then
   echo "uncommitted source; commit it first, or pass --allow-dirty:" >&2
@@ -50,9 +50,13 @@ if [ -z "$RECORDED" ]; then
   node -e '
 const fs = require("fs"), [hash, commit, clean, project] = process.argv.slice(1);
 const builds = fs.existsSync("app/builds.json") ? JSON.parse(fs.readFileSync("app/builds.json")) : [];
-if (!builds.some(b => b.hash === hash && b.project === project)) builds.push({ hash, commit, clean: clean === "true", project, recorded_at: new Date().toISOString() });
-fs.writeFileSync("app/builds.json", JSON.stringify(builds, null, 2) + "\n");' "$HASH" "$COMMIT" "$CLEAN" "$OWNER/$PROJECT"
-  echo "recorded $HASH, built from $COMMIT, in app/builds.json."
+const known = builds.find(b => b.hash === hash && b.project === project);
+if (known) console.log(`${hash} is already recorded here, built from ${known.commit}, but not on origin/main.`);
+else {
+  builds.push({ hash, commit, clean: clean === "true", project, recorded_at: new Date().toISOString() });
+  fs.writeFileSync("app/builds.json", JSON.stringify(builds, null, 2) + "\n");
+  console.log(`recorded ${hash}, built from ${commit}, in app/builds.json.`);
+}' "$HASH" "$COMMIT" "$CLEAN" "$OWNER/$PROJECT"
   echo "Commit and push app/builds.json (the page then checks this build's receipts), then run app/release.sh again."
   exit 0
 fi

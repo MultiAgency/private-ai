@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { checkSubmission, commentableLines, earlierFindings, mergeFindings, renderReview, systemPrompt, userPrompt } from "../review/review.mjs";
+import { checkSubmission, commentableLines, earlierFindings, mergeFindings, ownFindings, renderReview, systemPrompt, userPrompt } from "../review/review.mjs";
 
 const files = [{
   filename: "src/add.js",
@@ -167,8 +167,19 @@ test("the golden case the hosted App must match (app/tests/review.rs)", () => {
   assert.equal(userPrompt(c.pr, c.files, c.earlier), c.user_prompt);
   assert.deepEqual([...commentableLines(c.files)].sort(), c.commentable);
   for (const [submission, problem] of c.submissions) assert.equal(checkSubmission(submission) ?? null, problem);
+  assert.deepEqual(ownFindings(c.own_findings.reviews, c.own_findings.comments), c.own_findings.expected);
+  for (const { lists, expected } of c.merges) assert.deepEqual(mergeFindings(lists), expected);
   const attestation = tcb => ({ model: { tcb, signer: "5a02".padEnd(64, "0"), composeHash: "945b".padEnd(64, "0") }, gateway: { tcb: "OutOfDate" } });
   for (const r of c.renders) {
     assert.deepEqual(renderReview({ review: r.review, turns: Array(r.turns).fill({}), attestation: attestation(r.tcb), model: "z-ai/glm-5.3-flash", receiptSha256: "ab".repeat(32), runUrl: r.run_url ?? undefined, commentable: new Set(c.commentable) }), r.expected);
   }
+});
+
+test("the Action shows its readers the same defaults review.json sets", async () => {
+  const { default: spec } = await import("../review/review.json", { with: { type: "json" } });
+  const action = readFileSync(new URL("../review/action.yml", import.meta.url), "utf8");
+  const input = name => action.match(new RegExp(`^  ${name}:\\n(?:    .*\\n)*?    default: (.*)$`, "m"))?.[1].replace(/^"|"$/g, "");
+  assert.equal(input("model"), spec.defaults.model);
+  assert.equal(input("passes"), String(spec.defaults.passes));
+  assert.equal(input("rubric"), spec.defaults.rubric.join(","));
 });

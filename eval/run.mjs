@@ -4,10 +4,10 @@
 // It runs the same reviewChange the Action runs, several times in parallel,
 // and reports how often each bug was caught. Nothing is posted.
 //
-// Usage: node eval/run.mjs [--case eval/cases/x.json] [--runs 4] [--passes 1]
-//                          [--runner rust [--reply-cap N]]
-// --runner rust scores the hosted App's reviewer (app/) on the same case, with
-// --passes merged as the hosted job merges them, from its dry-run build:
+// Usage: node eval/run.mjs [--case eval/cases/x.json] [--runs 4] [--passes 1] [--runner rust]
+// --runner rust scores the hosted App (app/) on the same case: its dry-run
+// build runs the hosted job itself, run after run, and the judge reads the
+// review it would have posted (body and inline comments). Build it with:
 //   cargo build --release --target wasm32-wasip2 --no-default-features --target-dir target/dry
 // Env: NEARAI_API_KEY, GITHUB_TOKEN.
 import { execFile } from "node:child_process";
@@ -20,6 +20,7 @@ import { nearai } from "../core/nearai.mjs";
 import { github } from "../review/github.mjs";
 import { unpack } from "../review/repo.mjs";
 import { reviewChange } from "../review/review.mjs";
+import review from "../review/review.json" with { type: "json" };
 import { judge } from "./judge.mjs";
 
 const { values } = parseArgs({
@@ -28,12 +29,12 @@ const { values } = parseArgs({
     runs: { type: "string", default: "4" },
     passes: { type: "string", default: "1" },
     runner: { type: "string", default: "node" },
-    "reply-cap": { type: "string" },
   },
 });
 const casePath = resolve(values.case);
 const spec = JSON.parse(readFileSync(casePath, "utf8"));
-const model = process.env.MODEL || "z-ai/glm-5.3-flash";
+const { defaults } = review;
+const model = process.env.MODEL || defaults.model;
 const gh = github(process.env.GITHUB_TOKEN, spec.repo);
 const client = nearai(process.env.NEARAI_API_KEY);
 
@@ -47,7 +48,7 @@ const pr = {
   base: { ref: live.base.ref, sha: spec.base },
   head: { ref: live.head.ref, sha: spec.head },
 };
-const rubric = (await Promise.all(["REVIEW.md", "AGENTS.md"].map(async path => {
+const rubric = (await Promise.all(defaults.rubric.map(async path => {
   const text = await gh.text(path, spec.base);
   return text && `## ${path}\n\n${text}`;
 }))).filter(Boolean).join("\n\n");
@@ -55,19 +56,17 @@ const tarball = await gh.tarball(spec.head);
 const { attestation } = await attest(client, model);
 const publicKey = attestation.model.publicKey;
 
-/** One review by the App's reviewer: the dry-run build under wasmtime, on the same commit and description. */
+/** One review by the App: the dry-run build under wasmtime, on the same commit and description, as the text it would post. */
 function rustReview() {
   const wasm = resolve("target/dry/wasm32-wasip2/release/private-investigator.wasm");
-  const input = JSON.stringify({
-    repo: spec.repo, pr: spec.pull_request, base: spec.base, head: spec.head, description: pr.body, max_turns: 30, passes: Number(values.passes),
-    ...(values["reply-cap"] && { reply_cap: Number(values["reply-cap"]) }),
-  });
+  const input = JSON.stringify({ repo: spec.repo, pr: spec.pull_request, base: spec.base, head: spec.head, description: pr.body, max_turns: defaults.max_turns, passes: Number(values.passes) });
   return new Promise((done, fail) => {
     const child = execFile("wasmtime", ["run", "-S", "http", "-S", "inherit-env=n", "--env", "NEARAI_API_KEY", "--env", "GITHUB_TOKEN", wasm],
       { maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
         if (error) return fail(new Error(`rust reviewer: ${stderr.trim().split("\n").at(-1) || error.message}`));
         const out = JSON.parse(stdout);
-        done({ review: out.review, turns: Array(out.turns).fill(null) });
+        const text = [out.review.body, ...out.review.comments.map(c => `${c.path}:${c.line} ${c.body}`)].join("\n\n");
+        done({ text, findings: out.findings, turns: out.turns });
       });
     child.stdin.end(input);
   });
@@ -78,14 +77,17 @@ const runs = await Promise.all(Array.from({ length: Number(values.runs) }, async
   const head = unpack(tarball);
   const started = Date.now();
   try {
-    const { review, turns } = values.runner === "rust" ? await rustReview() : await reviewChange({
+    const { text, findings, turns } = values.runner === "rust" ? await rustReview() : await reviewChange({
       client, model, publicKey, pr, files: compare.files, rubric, root: head.root,
-      maxTurns: 30, passes: Number(values.passes),
-    });
-    const text = [review.summary, ...review.findings.map(f => `${f.path}:${f.line} ${f.pass}, ${f.severity}: ${f.body}`)].join("\n\n");
+      maxTurns: defaults.max_turns, passes: Number(values.passes),
+    }).then(({ review, turns }) => ({
+      text: [review.summary, ...review.findings.map(f => `${f.path}:${f.line} ${f.pass}, ${f.severity}: ${f.body}`)].join("\n\n"),
+      findings: review.findings.length,
+      turns: turns.length,
+    }));
     const caught = await judge({ client, model, publicKey, bugs: { ...spec.bugs, ...spec.falsePositives }, text });
     const seconds = Math.round((Date.now() - started) / 1000);
-    console.log(`run ${i}: ${seconds}s, ${turns.length} signed turns, ${review.findings.length} findings, ` +
+    console.log(`run ${i}: ${seconds}s, ${turns} signed turns, ${findings} findings, ` +
       Object.entries(caught).map(([id, yes]) => id in (spec.bugs ?? {}) ? `${id} ${yes ? "CAUGHT" : "missed"}` : `${id} ${yes ? "RAISED (false positive)" : "not raised"}`).join(", "));
     return { seconds, caught };
   } catch (error) {

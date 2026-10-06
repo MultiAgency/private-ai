@@ -10,6 +10,24 @@ pub fn spec() -> &'static Value {
     SPEC.get_or_init(|| serde_json::from_str(include_str!("../../review/review.json")).expect("review.json is valid"))
 }
 
+/// How a review runs unless told otherwise (review.json `defaults`).
+pub struct Defaults {
+    pub model: String,
+    pub passes: u64,
+    pub max_turns: u64,
+    pub rubric: Vec<String>,
+}
+
+pub fn defaults() -> Defaults {
+    let d = &spec()["defaults"];
+    Defaults {
+        model: d["model"].as_str().expect("review.json defaults.model").to_string(),
+        passes: d["passes"].as_u64().expect("review.json defaults.passes"),
+        max_turns: d["max_turns"].as_u64().expect("review.json defaults.max_turns"),
+        rubric: d["rubric"].as_array().expect("review.json defaults.rubric").iter().filter_map(|p| p.as_str().map(String::from)).collect(),
+    }
+}
+
 fn limit(key: &str) -> usize {
     spec()[key].as_u64().unwrap_or_else(|| panic!("review.json lacks {key}")) as usize
 }
@@ -213,6 +231,26 @@ pub fn render_review(review: &Value, proof: &[(String, String)], receipt_sha256:
         .map(|f| serde_json::json!({ "path": f["path"], "line": f["line"].as_f64().map(|l| l as i64), "side": "RIGHT", "body": format!("{} {}", label(f), f["body"].as_str().unwrap_or("")) }))
         .collect();
     serde_json::json!({ "body": body, "comments": comments })
+}
+
+/// Whether a review is this reviewer's own: posted by one of its accounts
+/// (review.json `authors`) under its heading. A heading alone is something anyone can type.
+pub fn is_our_review(review: &Value) -> bool {
+    let author = review["user"]["login"].as_str().is_some_and(|login| spec()["authors"].as_array().into_iter().flatten().any(|a| a.as_str() == Some(login)));
+    let mut headings = std::iter::once(format!("**{}**", spec()["name"].as_str().unwrap_or(""))).chain(spec()["legacy_headings"].as_array().into_iter().flatten().filter_map(|h| h.as_str().map(String::from)));
+    author && review["body"].as_str().is_some_and(|b| headings.any(|h| b.starts_with(h.as_str())))
+}
+
+/// The inline findings of this reviewer's own reviews, once each (review.mjs `ownFindings`).
+pub fn own_findings(reviews: &[Value], comments: &[Value]) -> Vec<Value> {
+    let ours: Vec<u64> = reviews.iter().filter(|r| is_our_review(r)).filter_map(|r| r["id"].as_u64()).collect();
+    let mut seen = std::collections::HashSet::new();
+    comments
+        .iter()
+        .filter(|c| c["pull_request_review_id"].as_u64().is_some_and(|id| ours.contains(&id)))
+        .map(|c| serde_json::json!({ "path": c["path"], "body": c["body"] }))
+        .filter(|f| seen.insert(format!("{}\n{}", f["path"], f["body"])))
+        .collect()
 }
 
 /// Findings from several passes, keeping the first one reported for each line.

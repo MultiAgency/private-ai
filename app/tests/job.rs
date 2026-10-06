@@ -1,146 +1,17 @@
 //! The hosted review as a job of short runs, against a fake GitHub and a fake
 //! model (encryption, signatures and attestation are tested in core.rs).
-use anyhow::{bail, Result};
+mod fakes;
+
+use anyhow::Result;
+use fakes::*;
 use private_investigator::agent::{Agent, Finish, Next};
-use private_investigator::attest::{Attestation, Model as Attested, Summary};
-use private_investigator::job::{run_step, start, Forge, Model, Outcome, Run, Settings};
+use private_investigator::attest::{Attestation, Model as Attested};
+use private_investigator::failure::Failure;
+use private_investigator::job::{run_step, start, Model, Outcome, Settings};
 use private_investigator::receipt::Evidence;
 use private_investigator::store::{take, Memory, Store};
 use serde_json::{json, Value};
-use std::cell::{Cell, RefCell};
-
-#[derive(Default)]
-struct Hub {
-    draft: bool,
-    checks: RefCell<Vec<Value>>,
-    reviews: RefCell<Vec<Value>>,
-    /// Runs killed while fetching the head commit (out of memory, say).
-    die_on_tarball: Cell<u32>,
-    /// Posting a review fails (a GitHub outage).
-    fail_review: Cell<bool>,
-    /// Reviews already on the pull request, and their inline comments.
-    earlier: (Vec<Value>, Vec<Value>),
-}
-
-fn tarball() -> Vec<u8> {
-    let mut b = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
-    let data = b"export const pay = total => total >= 0 && send(total);\n";
-    let mut h = tar::Header::new_gnu();
-    h.set_size(data.len() as u64);
-    h.set_mode(0o644);
-    h.set_cksum();
-    b.append_data(&mut h, "o-r-abc/lib/pay.mjs", &data[..]).unwrap();
-    b.into_inner().unwrap().finish().unwrap()
-}
-
-impl Forge for Hub {
-    fn pull(&self, _: u64) -> Result<Value> {
-        Ok(json!({ "number": 7, "title": "Pay", "body": "", "state": "open", "draft": self.draft, "base": { "ref": "main", "sha": "a".repeat(40) }, "head": { "ref": "pay", "sha": "b".repeat(40) } }))
-    }
-    fn files(&self, _: u64) -> Result<Vec<Value>> {
-        Ok(vec![json!({ "filename": "lib/pay.mjs", "status": "modified", "additions": 1, "deletions": 1, "patch": "@@ -1,1 +1,1 @@\n-export const pay = total => total > 0 && send(total);\n+export const pay = total => total >= 0 && send(total);" })])
-    }
-    fn text(&self, _: &str, _: &str) -> Result<Option<String>> {
-        Ok(None)
-    }
-    fn tarball(&self, _: &str) -> Result<Vec<u8>> {
-        if self.die_on_tarball.get() > 0 {
-            self.die_on_tarball.set(self.die_on_tarball.get() - 1);
-            panic!("the run was killed fetching the head commit");
-        }
-        Ok(tarball())
-    }
-    fn reviews(&self, _: u64) -> Result<Vec<Value>> {
-        Ok(self.earlier.0.clone())
-    }
-    fn review_comments(&self, _: u64) -> Result<Vec<Value>> {
-        Ok(self.earlier.1.clone())
-    }
-    fn review(&self, _: u64, body: &Value) -> Result<()> {
-        if self.fail_review.get() {
-            bail!("GitHub: 502");
-        }
-        self.reviews.borrow_mut().push(body.clone());
-        Ok(())
-    }
-    fn check_run(&self, id: Option<u64>, body: &Value) -> Result<u64> {
-        self.checks.borrow_mut().push(json!({ "id": id, "body": body }));
-        Ok(id.unwrap_or(42))
-    }
-}
-
-/// Reads the file, then submits one finding, one turn each.
-struct Scripted {
-    fail_attestation: bool,
-    die_on_turn: Cell<Option<u64>>,
-}
-
-fn summary(tcb: &str) -> Summary {
-    Summary { tcb: tcb.into(), advisories: vec![], signer: "5a".repeat(32), compose_hash: "94".repeat(32) }
-}
-
-impl Model for Scripted {
-    fn attest(&self, _: &str, allow: bool) -> Result<(Evidence, Attestation)> {
-        if self.fail_attestation {
-            bail!("model: TCB status OutOfDate not accepted (repository owner/secret-repo)");
-        }
-        let evidence = Evidence { nonce: "00".repeat(32), report: json!({}), gpu_token: "t".into(), allow_unpatched_model: allow };
-        Ok((evidence, Attestation { gateway: summary("OutOfDate"), model: Attested { summary: summary("UpToDate"), gpu_token: "t".into(), public_key: "5a".repeat(32) } }))
-    }
-    fn turn(&self, agent: &mut Agent, _: &str, _: &str, _: &[Value], finish: &Finish, call: &mut dyn FnMut(&str, &Value) -> String) -> Result<Next> {
-        if self.die_on_turn.get() == Some(agent.turn + 1) {
-            self.die_on_turn.set(None);
-            panic!("the run was killed mid-turn");
-        }
-        let reply = if agent.turn == 0 {
-            json!({ "content": "", "tool_calls": [{ "id": "c1", "type": "function", "function": { "name": "read_file", "arguments": "{\"path\":\"lib/pay.mjs\"}" } }] })
-        } else {
-            let read = agent.messages.iter().any(|m| m["role"] == "tool" && m["content"].as_str().unwrap_or("").contains(">= 0"));
-            assert!(read, "the tool read the head commit");
-            let submission = json!({ "summary": "Checked the payout guard.", "findings": [{ "path": "lib/pay.mjs", "line": 1, "pass": "Bugs", "severity": "Important", "body": "Zero totals are sent." }] });
-            json!({ "content": "", "tool_calls": [{ "id": "c2", "type": "function", "function": { "name": "submit_review", "arguments": submission.to_string() } }] })
-        };
-        let record = json!({ "id": format!("chat-{}", agent.turn + 1), "request_sha256": "", "response_sha256": "", "signature": {} });
-        agent.apply(&reply, Some("tool_calls"), record, finish, call)
-    }
-}
-
-/// A run at a given age; each run gets the next call id.
-struct At(Cell<u64>, Cell<u64>);
-impl Run for At {
-    fn elapsed(&self) -> u64 {
-        self.0.get()
-    }
-    fn now(&self) -> (u64, u32) {
-        (1_791_103_153, 0)
-    }
-    fn call_id(&self) -> Option<String> {
-        self.1.set(self.1.get() + 1);
-        Some(format!("call-{}", self.1.get()))
-    }
-    fn project(&self) -> Option<String> {
-        Some("hack.near/private-investigator".into())
-    }
-}
-
-fn at(age: u64) -> At {
-    At(Cell::new(age), Cell::new(0))
-}
-
-fn settings(passes: u64) -> Settings {
-    Settings { model: "z-ai/glm-5.3-flash".into(), passes, max_turns: 10, allow_unpatched_model: false, dry: false, caller: "alice.near".into(), caps: None, trigger: None }
-}
-
-fn model() -> Scripted {
-    Scripted { fail_attestation: false, die_on_turn: Cell::new(None) }
-}
-
-/// The published receipt (raw text) under `public:receipt:<sha>`.
-fn published(store: &Memory) -> (String, Value) {
-    let key = store.keys().into_iter().find(|k| k.starts_with("public:receipt:")).expect("a published receipt");
-    let text = String::from_utf8(store.get(&key).unwrap().unwrap()).unwrap();
-    (key["public:receipt:".len()..].to_string(), serde_json::from_str(&text).unwrap())
-}
+use std::cell::Cell;
 
 #[test]
 fn a_job_runs_to_a_posted_review_a_finished_check_and_a_published_receipt() {
@@ -196,7 +67,7 @@ fn a_receipt_lists_every_run_and_their_outputs_prove_its_parts() {
     assert!(runs.last().unwrap().get("output").is_none(), "its output is rebuilt by the checker");
     assert_eq!(outputs[1]["nonce"], receipt["nonce"], "the attest run generated the evidence's nonce");
     let mut attested: Vec<String> = outputs.iter().flat_map(|o| o["turns"].as_array().cloned().unwrap_or_default()).map(|t| t.as_str().unwrap().to_string()).collect();
-    let mut listed: Vec<String> = receipt["turns"].as_array().unwrap().iter().map(|t| turn_hash(t)).collect();
+    let mut listed: Vec<String> = receipt["turns"].as_array().unwrap().iter().map(turn_hash).collect();
     attested.sort();
     listed.sort();
     assert_eq!(attested, listed, "the runs' outputs account for every receipt turn, once each");
@@ -240,7 +111,7 @@ fn a_turn_that_never_fits_fails_the_job_cleanly() {
         model.die_on_turn.set(Some(1));
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_step(&store, &hub, &model, &old, "j4")));
     }
-    assert_eq!(run_step(&store, &hub, &model, &old, "j4").outcome, Outcome::Failed("run cut off"));
+    assert_eq!(run_step(&store, &hub, &model, &old, "j4").outcome, Outcome::Failed(Failure::RunCutOff));
     assert!(hub.reviews.borrow().is_empty());
     assert_eq!(hub.checks.borrow().last().unwrap()["body"]["output"]["title"], "Review stopped");
     assert!(store.keys().is_empty(), "nothing is left behind, not even the request marker");
@@ -260,7 +131,7 @@ fn a_failed_attestation_posts_nothing_and_says_so_without_repository_details() {
     let model = Scripted { fail_attestation: true, die_on_turn: Cell::new(None) };
     start(&store, &hub, &at(0), "j6", 1, "owner/secret-repo", 7, &settings(1)).unwrap();
     let step = run_step(&store, &hub, &model, &young, "j6");
-    assert_eq!(step.outcome, Outcome::Failed("attestation"));
+    assert_eq!(step.outcome, Outcome::Failed(Failure::Attestation));
     assert_eq!(step.to_json("j6"), json!({ "job": "j6", "more": false, "failed": "attestation" }), "only the id and a category leave the run");
     assert!(hub.reviews.borrow().is_empty());
     let summary = hub.checks.borrow().last().unwrap()["body"]["output"]["summary"].as_str().unwrap().to_string();
@@ -353,7 +224,7 @@ fn a_run_killed_fetching_the_commit_counts_and_the_job_fails_cleanly() {
     for _ in 0..3 {
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_step(&store, &hub, &model, &old, "j9"))).is_err());
     }
-    assert_eq!(run_step(&store, &hub, &model, &old, "j9").outcome, Outcome::Failed("run cut off"));
+    assert_eq!(run_step(&store, &hub, &model, &old, "j9").outcome, Outcome::Failed(Failure::RunCutOff));
     assert_eq!(hub.checks.borrow().last().unwrap()["body"]["output"]["title"], "Review stopped");
     assert!(store.keys().is_empty(), "no state, no code, no marker left behind");
 }
@@ -377,7 +248,7 @@ fn a_review_that_fails_to_post_leaves_none_behind_and_can_be_asked_for_again() {
     start(&store, &hub, &young, "j11", 1, "o/r", 7, &settings(1)).unwrap();
     run_step(&store, &hub, &model, &young, "j11");
     hub.fail_review.set(true);
-    assert_eq!(run_step(&store, &hub, &model, &young, "j11").outcome, Outcome::Failed("github"));
+    assert_eq!(run_step(&store, &hub, &model, &young, "j11").outcome, Outcome::Failed(Failure::GitHub));
     assert!(hub.reviews.borrow().is_empty());
     assert_eq!(hub.checks.borrow().last().unwrap()["body"]["output"]["title"], "Review stopped", "the check run says so, after closing");
     hub.fail_review.set(false);
@@ -403,7 +274,96 @@ fn earlier_findings_come_only_from_this_reviewers_own_reviews() {
     let (store, model, young) = (Memory::default(), model(), at(0));
     start(&store, &hub, &young, "j13", 1, "o/r", 7, &settings(1)).unwrap();
     run_step(&store, &hub, &model, &young, "j13");
-    let prompt = take(&store, "job:j13").unwrap().unwrap()["agents"][0].to_string();
+    let prompt = take(&store, "job:j13").unwrap().unwrap()["review"]["agents"][0].to_string();
     assert!(prompt.contains("a real earlier finding"));
     assert!(!prompt.contains("planted"), "a review someone else posts under its name is not its own");
+}
+
+/// The page's sample receipt, replayed through the job: its real model
+/// evidence, and its real signed turns, one per model turn in order. The
+/// receipts the job then writes carry real signatures and attestation, so the
+/// JavaScript checker verifies them for real (test/receipt.test.mjs).
+struct Replayed {
+    sample: Value,
+    next: Cell<usize>,
+    die_on: Cell<Option<usize>>,
+}
+
+impl Model for Replayed {
+    fn attest(&self, _: &str, allow: bool) -> Result<(Evidence, Attestation)> {
+        let s = &self.sample;
+        let evidence = Evidence { nonce: s["nonce"].as_str().unwrap().into(), report: s["attestation"].clone(), gpu_token: s["gpu_token"].as_str().unwrap().into(), allow_unpatched_model: allow };
+        Ok((evidence, Attestation { gateway: summary("OutOfDate"), model: Attested { summary: summary("UpToDate"), gpu_token: String::new(), public_key: String::new() } }))
+    }
+    fn turn(&self, agent: &mut Agent, _: &str, _: &str, _: &[Value], finish: &Finish, call: &mut dyn FnMut(&str, &Value) -> String) -> Result<Next> {
+        let k = self.next.get();
+        if self.die_on.get() == Some(k) {
+            self.die_on.set(None);
+            panic!("the run was killed mid-turn");
+        }
+        self.next.set(k + 1);
+        let turns = self.sample["turns"].as_array().unwrap();
+        let reply = if k + 1 < turns.len() {
+            json!({ "content": "", "tool_calls": [{ "id": format!("c{k}"), "type": "function", "function": { "name": "read_file", "arguments": "{\"path\":\"lib/pay.mjs\"}" } }] })
+        } else {
+            let submission = json!({ "summary": "Checked the payout guard.", "findings": [{ "path": "lib/pay.mjs", "line": 1, "pass": "Bugs", "severity": "Important", "body": "Zero totals are sent." }] });
+            json!({ "content": "", "tool_calls": [{ "id": format!("c{k}"), "type": "function", "function": { "name": "submit_review", "arguments": submission.to_string() } }] })
+        };
+        agent.apply(&reply, Some("tool_calls"), turns[k].clone(), finish, call)
+    }
+}
+
+/// One hosted review, run to the end: the receipt it published, the salt and
+/// subject its link carries, and every run's output by call id (the last one
+/// too, which the checker rebuilds and must match).
+fn conformance_case(name: &str, age: u64, kill: Option<usize>) -> Value {
+    let sample: Value = serde_json::from_str(include_str!("../../site/sample-receipt.json")).unwrap();
+    let (store, hub, run) = (Memory::default(), Hub::default(), at(age));
+    let model = Replayed { sample, next: Cell::new(0), die_on: Cell::new(kill) };
+    let mut outputs = serde_json::Map::new();
+    let mut note = |output: Value, run: &At| outputs.insert(format!("call-{}", run.1.get()), output);
+    note(start(&store, &hub, &run, "job-1", 1, "owner/secret-repo", 7, &settings(1)).unwrap().1.to_json("job-1"), &run);
+    loop {
+        let calls = run.1.get();
+        let Ok(step) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_step(&store, &hub, &model, &run, "job-1"))) else { continue };
+        assert!(run.1.get() > calls, "a run that answers is recorded");
+        note(step.to_json("job-1"), &run);
+        if step.outcome != Outcome::More {
+            assert_eq!(step.outcome, Outcome::Done);
+            break;
+        }
+    }
+    let (sha, _) = published(&store);
+    let text = String::from_utf8(store.get(&format!("public:receipt:{sha}")).unwrap().unwrap()).unwrap();
+    json!({
+        "name": name,
+        "receipt": text,
+        "sha256": sha,
+        "salt": "ab".repeat(16),
+        "subject": { "pull_request": "owner/secret-repo#7", "base_sha": "a".repeat(40), "head_sha": "b".repeat(40) },
+        "outputs": outputs,
+    })
+}
+
+/// The receipts this job writes, kept as test/fixtures/receipt-v2-cases.json,
+/// which the JavaScript checker must verify: the writer and the checker of the
+/// hosted receipt meet in one file. After a deliberate change, regenerate it
+/// with `BLESS=1 cargo test` and commit it; `npm test` then says whether the
+/// checker still agrees.
+#[test]
+fn the_receipts_the_job_writes_are_the_ones_the_checker_is_tested_on() {
+    let cases = json!({
+        "$comment": "Written by app/tests/job.rs (BLESS=1 cargo test); verified by test/receipt.test.mjs. Real model evidence and signed turns from site/sample-receipt.json; OutLayer attestations are stubbed from each run's output.",
+        "cases": [
+            conformance_case("one turn per run", 100, None),
+            conformance_case("a run killed after saving a turn", 0, Some(3)),
+        ],
+    });
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test/fixtures/receipt-v2-cases.json");
+    let text = format!("{}\n", serde_json::to_string_pretty(&cases).unwrap());
+    if std::env::var_os("BLESS").is_some() {
+        std::fs::write(&path, &text).unwrap();
+    }
+    let kept = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(kept == text, "the job now writes different receipts: run `BLESS=1 cargo test`, then `npm test`, and commit test/fixtures/receipt-v2-cases.json");
 }

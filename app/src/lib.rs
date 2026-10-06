@@ -3,7 +3,9 @@
 //! same messages, and writes receipts the page's checker verifies.
 pub mod agent;
 pub mod attest;
+pub mod doors;
 pub mod e2ee;
+pub mod failure;
 #[cfg(target_arch = "wasm32")]
 pub mod github;
 #[cfg(target_arch = "wasm32")]

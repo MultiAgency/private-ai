@@ -43,8 +43,7 @@ pub struct Repo {
     dirs: BTreeSet<String>,
 }
 
-/// The message when the files held would pass the budget `from_tarball` is given.
-pub const TOO_LARGE: &str = "the head commit is larger than a run can hold";
+
 
 /// A path inside the commit, normalized; `None` when it would leave it.
 fn normalize(path: &str) -> Option<String> {
@@ -68,7 +67,7 @@ enum Node<'a> {
 
 impl Repo {
     /// Reads a GitHub tarball (one top-level directory holding the tree),
-    /// holding at most `budget` bytes of files.
+    /// holding at most `budget` bytes of files (past it, `Failure::TooLarge`).
     pub fn from_tarball(gzipped: &[u8], budget: usize) -> Result<Self> {
         let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(gzipped));
         let (mut files, mut dirs) = (BTreeMap::new(), BTreeSet::from([String::new()]));
@@ -102,7 +101,7 @@ impl Repo {
                 entry.by_ref().take(max as u64 + 1).read_to_end(&mut bytes)?;
                 held += bytes.len();
                 if held > budget {
-                    anyhow::bail!(TOO_LARGE);
+                    return Err(crate::failure::Failure::TooLarge.into());
                 }
                 files.insert(path, (bytes.len() <= max).then_some(bytes));
             }
