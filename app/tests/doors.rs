@@ -104,3 +104,23 @@ fn failures_come_back_as_categories() {
     assert_eq!(call(json!(null), AUTHOR, &down, &store), json!({ "failed": "bad input", "more": false }));
     assert_eq!(call(json!({ "operation": "status" }), "anyone.near", &down, &store)["name"], "Private Investigator", "status is open to all");
 }
+
+#[test]
+fn a_later_push_gets_a_check_saying_how_to_ask_and_costs_no_review() {
+    let (gh, store) = (github(Hub::default()), Memory::default());
+    let out = call(event(json!({ "push": true })), AUTHOR, &gh, &store);
+    assert_eq!((out["more"].clone(), out["skipped"].clone()), (json!(false), json!(true)));
+    let check = gh.hub.checks.borrow()[0]["body"].clone();
+    assert_eq!((check["status"].clone(), check["output"]["title"].clone()), (json!("completed"), json!("Not reviewed: new commits")));
+    assert!(check["output"]["summary"].as_str().unwrap().contains("/review"));
+    assert!(store.keys().is_empty(), "no job, and nothing counted against the free tier");
+    assert_eq!(call(event(json!({ "push": true })), "mallory.near", &gh, &store)["failed"], "not allowed");
+}
+
+#[test]
+fn the_checks_say_what_the_free_tier_has_left() {
+    let (gh, store) = (github(Hub::default()), Memory::default());
+    call(event(json!({})), AUTHOR, &gh, &store);
+    let queued = gh.hub.checks.borrow()[0]["body"]["output"]["summary"].as_str().unwrap().to_string();
+    assert!(queued.ends_with("9 of 10 free reviews left this month."), "{queued}");
+}

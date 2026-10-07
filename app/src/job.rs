@@ -208,6 +208,9 @@ struct Job {
     /// Runs since the last progress that never answered (killed). A run
     /// counts itself in as it starts; progress counts it out.
     in_flight: u64,
+    /// What the free tier has left for this installation, said on its checks.
+    #[serde(default)]
+    free_left: Option<String>,
     /// Every run that answered: its call id and its output, for the receipt.
     runs: Vec<Value>,
     review: Option<Passes>,
@@ -276,7 +279,7 @@ pub fn start(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, ins
             return Ok((previous_job, step));
         }
     }
-    if let (Some(caps), true) = (&settings.caps, installation > 0) {
+    let free_left = if let (Some(caps), true) = (&settings.caps, installation > 0) {
         let month = &crate::iso_time(run.now().0, 0)[..7];
         let (mine, all) = (format!("cap:{month}:installation:{installation}"), format!("cap:{month}:all"));
         let (used, used_all) = (count(store, &mine)?, count(store, &all)?);
@@ -293,8 +296,11 @@ pub fn start(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, ins
         }
         store.set(&mine, (used + 1).to_string().as_bytes())?;
         store.set(&all, (used_all + 1).to_string().as_bytes())?;
-    }
-    let check = if settings.dry { None } else { Some(forge.check_run(None, &json!({ "name": spec()["name"], "head_sha": head, "status": "queued", "output": { "title": "On the case", "summary": "Queued for a private review." } }))?) };
+        Some(format!("{} of {} free reviews left this month.", caps.per_installation - (used + 1), caps.per_installation))
+    } else {
+        None
+    };
+    let check = if settings.dry { None } else { Some(forge.check_run(None, &json!({ "name": spec()["name"], "head_sha": head, "status": "queued", "output": { "title": "On the case", "summary": with_free_left("Queued for a private review.", &free_left) } }))?) };
     let step = Step::plain(Outcome::More);
     let mut state = Job {
         installation,
@@ -311,6 +317,7 @@ pub fn start(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, ins
         salt: hex::encode(run.salt()),
         marker: marker.clone(),
         in_flight: 0,
+        free_left,
         runs: vec![],
         review: None,
     };
@@ -507,11 +514,34 @@ fn finish(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, state:
     let still_open = review["findings"].as_array().map_or(0, Vec::len) - tally;
     forge.check_run(state.check_run, &json!({
         "status": "completed", "conclusion": "neutral",
-        "output": { "title": case_closed(tally, still_open), "summary": format!("Receipt sha256 `{sha}`: [check it]({link}).") },
+        "output": { "title": case_closed(tally, still_open), "summary": with_free_left(&format!("Receipt sha256 `{sha}`: [check it]({link})."), &state.free_left) },
     }))?;
     forge.review(state.number, &json!({ "commit_id": pr["head"]["sha"], "event": "COMMENT", "body": posted["body"], "comments": posted["comments"] }))?;
     let _ = remove(store, &key(job));
     Ok(step)
+}
+
+/// A check summary, with what the free tier has left when it applies.
+fn with_free_left(summary: &str, free_left: &Option<String>) -> String {
+    match free_left {
+        Some(left) => format!("{summary}\n\n{left}"),
+        None => summary.to_string(),
+    }
+}
+
+/// A push after a pull request opened is reviewed only on request: its new
+/// head gets a finished check that says so, and how to ask. No job, nothing
+/// counted against the free tier.
+pub fn note_unreviewed(forge: &dyn Forge, number: u64) -> Result<Step> {
+    let pr = forge.pull(number)?;
+    if pr["state"] != "open" || pr["draft"] == true {
+        return Ok(Step::plain(Outcome::Skipped));
+    }
+    forge.check_run(None, &json!({
+        "name": spec()["name"], "head_sha": pr["head"]["sha"], "status": "completed", "conclusion": "neutral",
+        "output": { "title": "Not reviewed: new commits", "summary": "This commit came after the review. To review it, comment `/review` on the pull request, or press Re-run on this check." },
+    }))?;
+    Ok(Step::plain(Outcome::Skipped))
 }
 
 /// The finished check's title: new leads, and earlier ones the review found

@@ -20,11 +20,11 @@ test("only a body GitHub signed with our secret is accepted", async () => {
   assert.equal(await signedByGitHub(secret, body, null), false);
 });
 
-test("opened, reopened and ready pull requests, /review comments and re-runs ask for a review; pushes do not", () => {
+test("opened, reopened and ready pull requests, /review comments and re-runs ask for a review; later pushes are only noted", () => {
   const pr = action => ({ ...base, action, pull_request: { number: 7, title: "Secret plan", body: "private text" } });
   assert.deepEqual(reviewRequest("pull_request", pr("opened")), { installation: 11, repo_id: 22, pr: 7 });
   assert.deepEqual(reviewRequest("pull_request", pr("ready_for_review")), { installation: 11, repo_id: 22, pr: 7 });
-  assert.equal(reviewRequest("pull_request", pr("synchronize")), null, "a later push waits for /review");
+  assert.deepEqual(reviewRequest("pull_request", pr("synchronize")), { installation: 11, repo_id: 22, pr: 7, push: true }, "a later push is noted, not reviewed");
   assert.equal(reviewRequest("pull_request", pr("closed")), null);
   assert.equal(reviewRequest("pull_request", pr("labeled")), null);
   const comment = (text, association = "COLLABORATOR") => ({ ...base, action: "created", issue: { number: 7, pull_request: {} }, comment: { id: 99, body: text, user: { login: "someone" }, author_association: association } });

@@ -60,8 +60,9 @@ New cases and models are measured before any claim here changes. React 👍 or
 [Install it](https://github.com/apps/private-investigator/installations/new)
 and pick the repositories. It reviews a pull request when it opens, reopens or
 leaves draft, and again when someone with write access comments `/review` or
-presses Re-run on its check. Free for 10 reviews per installation a month,
-while the free tier's monthly pool lasts.
+presses Re-run on its check. A later push isn't reviewed unless asked: its
+commit gets a check saying so. Free for 10 reviews per installation a month,
+while the free tier's monthly pool lasts; each check says how many are left.
 
 - **Where your code goes:** an attested OutLayer enclave fetches it from GitHub
   with the App's token and sends it end-to-end encrypted to the attested NEAR

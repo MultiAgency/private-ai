@@ -88,6 +88,11 @@ fn event(event: &Value, caller: &str, host: &Host) -> Value {
         return refused("bad event");
     };
     let job = host.run.job_id();
+    // A later push: no review unless asked, and the check on its commit says how.
+    if event["push"] == true {
+        let noted = host.github.by_id(installation, repo_id).and_then(|(_, forge)| job::note_unreviewed(forge.as_ref(), pr));
+        return answer(&job, noted.map(|step| (job.clone(), step)));
+    }
     let opened = host.github.by_id(installation, repo_id).and_then(|(name, forge)| {
         // A `/review` comment starts a review only for someone who can write to the repository.
         if let Some(comment) = event["comment"].as_u64() {

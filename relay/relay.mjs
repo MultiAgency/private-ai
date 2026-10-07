@@ -43,7 +43,14 @@ export function reviewRequest(event, payload) {
   let pr;
   let comment;
   let rerun;
+  let push;
   if (event === "pull_request" && PR_ACTIONS.has(payload.action)) pr = payload.pull_request?.number;
+  // A later push isn't reviewed unless asked; the enclave puts a check on its
+  // commit saying so, and how to ask.
+  else if (event === "pull_request" && payload.action === "synchronize") {
+    pr = payload.pull_request?.number;
+    push = true;
+  }
   else if (event === "issue_comment" && payload.action === "created" && payload.issue?.pull_request && /^\/review\b/.test(payload.comment?.body ?? "")
     && !STRANGERS.has(payload.comment?.author_association ?? "NONE")) {
     pr = payload.issue.number;
@@ -53,7 +60,7 @@ export function reviewRequest(event, payload) {
     rerun = payload.check_run?.id;
   }
   if (!Number.isInteger(pr)) return null;
-  return { installation, repo_id: repo, pr, ...(Number.isInteger(comment) && { comment }), ...(Number.isInteger(rerun) && { rerun }) };
+  return { installation, repo_id: repo, pr, ...(Number.isInteger(comment) && { comment }), ...(Number.isInteger(rerun) && { rerun }), ...(push && { push }) };
 }
 
 /** OutLayer's input for a new review: ids, and a nonce so its public input hash can't be guessed. */
