@@ -59,7 +59,13 @@ const fs = require("fs"), [hash, commit, clean, project] = process.argv.slice(1)
 const builds = fs.existsSync("app/builds.json") ? JSON.parse(fs.readFileSync("app/builds.json")) : [];
 builds.push({ hash, commit, clean: clean === "true", project, recorded_at: new Date().toISOString() });
 fs.writeFileSync("app/builds.json", JSON.stringify(builds, null, 2) + "\n");' "$HASH" "$RECORDED" "$CLEAN" "$OWNER/$PROJECT"
-  git commit -q -m "Record build $(echo "$HASH" | cut -c1-8)" -- app/builds.json
+  # A commit that doesn't happen (a cancelled signing prompt, say) leaves no
+  # stray record behind, so running this again starts clean.
+  if ! git commit -q -m "Record build $(echo "$HASH" | cut -c1-8)" -- app/builds.json; then
+    git checkout -q -- app/builds.json
+    echo "the record wasn't committed, so nothing was released; run this again" >&2
+    exit 1
+  fi
   git push -q origin HEAD:main
   echo "recorded $HASH, built from $RECORDED, and pushed the record"
 else
