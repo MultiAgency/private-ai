@@ -7,6 +7,7 @@ use serde_json::Value;
 use wasip2::http::types::Method;
 
 use crate::net::{request, Response};
+use crate::wire::encode_segment as encode;
 
 const API: &str = "https://api.github.com";
 const CODELOAD: &str = "https://codeload.github.com/";
@@ -159,15 +160,4 @@ impl Repo {
         let run: Value = serde_json::from_slice(&response.body)?;
         run["id"].as_u64().ok_or_else(|| anyhow!("GitHub check run: no id returned"))
     }
-}
-
-/// `encodeURIComponent` for one path segment.
-fn encode(segment: &str) -> String {
-    segment
-        .bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')' => (b as char).to_string(),
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
 }

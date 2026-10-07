@@ -18,6 +18,7 @@ use crate::attest::{self, Attestation, Nvidia, Options, Verified, NRAS};
 use crate::e2ee::Session;
 use crate::receipt::Evidence;
 use crate::sign::{check_signature, sha256, signed_text};
+use crate::wire::{parse_events, percent_decode};
 
 pub struct Response {
     pub status: u16,
@@ -111,21 +112,7 @@ fn fmspc(extension: &[u8]) -> Result<String> {
 
 fn issuer_chain(response: &Response, names: &[&str]) -> Result<String> {
     let raw = names.iter().find_map(|n| response.header(n)).ok_or_else(|| anyhow!("missing {}", names[0]))?;
-    let mut out = Vec::with_capacity(raw.len());
-    let bytes = raw.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(&raw[i + 1..i + 3], 16) {
-                out.push(b);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    Ok(String::from_utf8(out)?)
+    percent_decode(raw)
 }
 
 /// The collateral for a quote whose certification data embeds its PCK chain
@@ -228,16 +215,6 @@ pub struct Turn {
     pub finish_reason: Option<String>,
     pub usage: Option<Value>,
     pub record: Value,
-}
-
-/// The server-sent events of a streamed reply, without the closing [DONE].
-pub fn parse_events(raw: &[u8]) -> Result<Vec<Value>> {
-    String::from_utf8_lossy(raw)
-        .split('\n')
-        .filter_map(|line| line.strip_prefix("data: "))
-        .filter(|data| *data != "[DONE]")
-        .map(|data| Ok(serde_json::from_str(data)?))
-        .collect()
 }
 
 impl NearAi {

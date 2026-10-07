@@ -19,6 +19,7 @@ pub mod repo;
 pub mod review;
 pub mod sign;
 pub mod store;
+pub mod wire;
 
 use anyhow::Result;
 
