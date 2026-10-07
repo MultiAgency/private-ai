@@ -29,6 +29,12 @@ pub struct Host<'a> {
     pub github: &'a dyn Installations,
 }
 
+/// Accounts whose own repositories review without the free tier's limits: the
+/// author's organization, whose NEAR AI key pays for every review anyway, so
+/// its own use neither stops at a cap nor draws on the pool others share
+/// (owner, 2026-10-07). The name is GitHub's, read inside the enclave.
+const UNCAPPED: &[&str] = &["MultiAgency"];
+
 fn refused(category: &str) -> Value {
     json!({ "failed": category, "more": false })
 }
@@ -102,7 +108,9 @@ fn event(event: &Value, caller: &str, host: &Host) -> Value {
         }
         let trigger = event["comment"].as_u64().map(|c| format!("comment:{c}")).or_else(|| event["rerun"].as_u64().map(|r| format!("rerun:{r}")));
         // App installations review on the author's NEAR AI key, within the free tier.
-        let settings = Settings { caps: Some(job::FREE_TIER), trigger, ..settings(caller, false, None) };
+        let owner = name.split('/').next().unwrap_or("");
+        let caps = if UNCAPPED.iter().any(|u| u.eq_ignore_ascii_case(owner)) { None } else { Some(job::FREE_TIER) };
+        let settings = Settings { caps, trigger, ..settings(caller, false, None) };
         job::start(host.store, forge.as_ref(), host.run, &job, installation, &name, pr, &settings)
     });
     answer(&job, opened)

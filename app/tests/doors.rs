@@ -15,6 +15,8 @@ use serde_json::{json, Value};
 struct Github {
     hub: Hub,
     down: bool,
+    /// The repository's full name, as GitHub gives it.
+    name: &'static str,
 }
 
 impl Installations for Github {
@@ -22,7 +24,7 @@ impl Installations for Github {
         if self.down {
             return Err(Failure::GitHub.into());
         }
-        Ok(("o/r".into(), Box::new(&self.hub)))
+        Ok((self.name.into(), Box::new(&self.hub)))
     }
     fn by_name(&self, _: u64, _: &str) -> Result<Box<dyn Forge + '_>> {
         if self.down {
@@ -35,7 +37,7 @@ impl Installations for Github {
 const AUTHOR: &str = "hack.near";
 
 fn github(hub: Hub) -> Github {
-    Github { hub, down: false }
+    Github { hub, down: false, name: "o/r" }
 }
 
 fn call(input: Value, caller: &str, github: &Github, store: &Memory) -> Value {
@@ -95,7 +97,7 @@ fn a_deliberate_request_is_a_new_review_and_a_repeated_event_is_not() {
 
 #[test]
 fn failures_come_back_as_categories() {
-    let (down, store) = (Github { hub: Hub::default(), down: true }, Memory::default());
+    let (down, store) = (Github { hub: Hub::default(), down: true, name: "o/r" }, Memory::default());
     let out = call(event(json!({})), AUTHOR, &down, &store);
     assert_eq!((out["failed"].clone(), out["more"].clone()), (json!("github"), json!(false)));
     assert_eq!(call(json!({ "event": { "installation": 1 } }), AUTHOR, &down, &store), json!({ "failed": "bad event", "more": false }));
@@ -123,4 +125,16 @@ fn the_checks_say_what_the_free_tier_has_left() {
     call(event(json!({})), AUTHOR, &gh, &store);
     let queued = gh.hub.checks.borrow()[0]["body"]["output"]["summary"].as_str().unwrap().to_string();
     assert!(queued.ends_with("9 of 10 free reviews left this month."), "{queued}");
+}
+
+#[test]
+fn multiagencys_own_repositories_review_outside_the_free_tier() {
+    let (gh, store) = (Github { hub: Hub::default(), down: false, name: "MultiAgency/private-investigator-test" }, Memory::default());
+    assert_eq!(call(event(json!({})), AUTHOR, &gh, &store)["more"], true);
+    assert!(!store.keys().iter().any(|k| k.starts_with("cap:")), "nothing counted, against the installation or the pool");
+    assert!(!gh.hub.checks.borrow()[0]["body"]["output"]["summary"].as_str().unwrap().contains("free reviews left"));
+    // A look-alike name is someone else's.
+    let (other, store) = (Github { hub: Hub::default(), down: false, name: "MultiAgency-fan/repo" }, Memory::default());
+    call(event(json!({})), AUTHOR, &other, &store);
+    assert!(store.keys().iter().any(|k| k.starts_with("cap:")));
 }
