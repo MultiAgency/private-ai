@@ -1,0 +1,14 @@
+{
+  "name": "near-agencies#102 at bafe526: duplicate payout proposals",
+  "repo": "MultiAgency/near-agencies",
+  "pull_request": 102,
+  "base": "bc53d5a2ec2400669a833c57791a93380c811e17",
+  "head": "bafe526f0c47195c7667f7cf40a62820ea8d977e",
+  "description": "near-agencies-102-bafe526.md",
+  "source": "All three were raised on this commit by ai-review and Claude's review (comments 4179290295, 4179203557, 4179166907) and fixed by later commits of the same pull request: ff7e446, e98b390 and 844d54b.",
+  "bugs": {
+    "approvedBeforeSweep": "Does this code review CLAIM, as a defect, that duplicate payout proposals are looked for only while the task's recorded proposal is still InProgress, so that if the recorded proposal is approved before the next sweep nothing flags a duplicate that stays live and the task can be paid twice? Saying the duplicate check is correct, or only describing it, is NO.",
+    "recentWindow": "Does this code review CLAIM, as a defect, that the duplicate checks read only the treasury's most recent 100 proposals (recentProposals), so a recorded proposal or duplicate that falls out of that window goes unflagged and a duplicate stays approvable? Saying the window is fine is NO.",
+    "deadRecordedProposal": "Does this code review CLAIM, as a defect, that when the task's recorded proposal is no longer live (expired or rejected) while duplicates are live, the flag or panel message tells approvers to approve or keep the recorded proposal, which can no longer be paid, so following it leaves the task unpaid? Saying the message is fine is NO."
+  }
+}
