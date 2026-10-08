@@ -61,8 +61,10 @@ New cases and models are measured before any claim here changes. React 👍 or
 and pick the repositories. It reviews a pull request when it opens, reopens or
 leaves draft, and again when someone with write access comments `/review` or
 presses Re-run on its check. A later push isn't reviewed unless asked: its
-commit gets a check saying so. Free for 10 reviews per installation a month,
-while the free tier's monthly pool lasts; each check says how many are left.
+commit gets a check saying so. New installations get a 30-day trial with 40
+reviews; each check says how many reviews and days are left. When the trial
+ends, the check points at the upgrade page. A shared monthly pool still caps
+total free usage across all installations.
 
 - **Where your code goes:** an attested OutLayer enclave fetches it from GitHub
   with the App's token and sends it end-to-end encrypted to the attested NEAR
@@ -79,9 +81,10 @@ while the free tier's monthly pool lasts; each check says how many are left.
 - **What it keeps:** a review's working state is sealed in the enclave's
   storage and deleted when the review finishes or fails. What stays is the
   review on your pull request, the public receipt (with its count of new
-  findings), the monthly count for your installation, and a sealed marker per
-  request (a hash of its ids, and when it ran) that stops a repeated delivery
-  from reviewing twice. Uninstalling stops reviews; nothing else holds your code.
+  findings), the installation's trial (start time and review count), the shared
+  monthly free-pool count, and a sealed marker per request (a hash of its ids,
+  and when it ran) that stops a repeated delivery from reviewing twice.
+  Uninstalling stops reviews; nothing else holds your code.
 - **Who can start a review:** GitHub's events, through our relay. A `/review`
   needs write access to the repository; the relay drops one from someone with
   no history there, and the enclave checks the rest on GitHub.
