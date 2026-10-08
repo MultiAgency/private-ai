@@ -115,14 +115,14 @@ impl Model for Scripted {
     }
 }
 
-/// A run at a given age; each run gets the next call id, and the same salt.
-pub struct At(pub Cell<u64>, pub Cell<u64>);
+/// A run at a given age and wall clock; each run gets the next call id, and the same salt.
+pub struct At(pub Cell<u64>, pub Cell<u64>, pub Cell<u64>);
 impl Run for At {
     fn elapsed(&self) -> u64 {
         self.0.get()
     }
     fn now(&self) -> (u64, u32) {
-        (1_791_103_153, 0)
+        (self.2.get(), 0)
     }
     fn call_id(&self) -> Option<String> {
         self.1.set(self.1.get() + 1);
@@ -137,7 +137,12 @@ impl Run for At {
 }
 
 pub fn at(age: u64) -> At {
-    At(Cell::new(age), Cell::new(0))
+    At(Cell::new(age), Cell::new(0), Cell::new(1_791_103_153))
+}
+
+/// A young run at an explicit wall-clock second (for trial windows).
+pub fn at_now(secs: u64) -> At {
+    At(Cell::new(0), Cell::new(0), Cell::new(secs))
 }
 
 pub fn settings(passes: u64) -> Settings {

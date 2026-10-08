@@ -115,26 +115,27 @@ fn a_later_push_gets_a_check_saying_how_to_ask_and_costs_no_review() {
     let check = gh.hub.checks.borrow()[0]["body"].clone();
     assert_eq!((check["status"].clone(), check["output"]["title"].clone()), (json!("completed"), json!("Not reviewed: new commits")));
     assert!(check["output"]["summary"].as_str().unwrap().contains("/review"));
-    assert!(store.keys().is_empty(), "no job, and nothing counted against the free tier");
+    assert!(store.keys().is_empty(), "no job, and nothing counted against the trial");
     assert_eq!(call(event(json!({ "push": true })), "mallory.near", &gh, &store)["failed"], "not allowed");
 }
 
 #[test]
-fn the_checks_say_what_the_free_tier_has_left() {
+fn the_checks_say_what_the_trial_has_left() {
     let (gh, store) = (github(Hub::default()), Memory::default());
     call(event(json!({})), AUTHOR, &gh, &store);
     let queued = gh.hub.checks.borrow()[0]["body"]["output"]["summary"].as_str().unwrap().to_string();
-    assert!(queued.ends_with("9 of 10 free reviews left this month."), "{queued}");
+    assert!(queued.contains("Trial: 39 of 40 reviews left"), "{queued}");
+    assert!(queued.contains("30 days left"), "{queued}");
 }
 
 #[test]
-fn multiagencys_own_repositories_review_outside_the_free_tier() {
+fn multiagencys_own_repositories_review_outside_the_trial() {
     let (gh, store) = (Github { hub: Hub::default(), down: false, name: "MultiAgency/private-investigator-test" }, Memory::default());
     assert_eq!(call(event(json!({})), AUTHOR, &gh, &store)["more"], true);
-    assert!(!store.keys().iter().any(|k| k.starts_with("cap:")), "nothing counted, against the installation or the pool");
-    assert!(!gh.hub.checks.borrow()[0]["body"]["output"]["summary"].as_str().unwrap().contains("free reviews left"));
+    assert!(!store.keys().iter().any(|k| k.starts_with("trial:") || k.starts_with("cap:")), "nothing counted, against the installation or the pool");
+    assert!(!gh.hub.checks.borrow()[0]["body"]["output"]["summary"].as_str().unwrap().contains("Trial:"));
     // A look-alike name is someone else's.
     let (other, store) = (Github { hub: Hub::default(), down: false, name: "MultiAgency-fan/repo" }, Memory::default());
     call(event(json!({})), AUTHOR, &other, &store);
-    assert!(store.keys().iter().any(|k| k.starts_with("cap:")));
+    assert!(store.keys().iter().any(|k| k.starts_with("trial:")));
 }

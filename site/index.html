@@ -72,7 +72,7 @@
         <p>The same review and the same receipts, run where you prefer.</p>
       </div>
       <ul class="limits">
-        <li><h3>The GitHub App</h3><p class="muted">Install it and pick the repositories: nothing else to set up. It reviews a pull request when it opens or leaves draft; later pushes, when someone with write access comments <code>/review</code> or presses Re-run, and until then the new commit's check says it isn't reviewed. Your code is fetched and read only inside an attested <a href="https://outlayer.ai">OutLayer</a> enclave, running our published build. Free for 10 reviews per installation a month, from a shared monthly pool: each check says how many are left, and when either runs out, the check says so and reviews resume on the 1st.</p><p><a class="button primary" href="https://github.com/apps/private-investigator/installations/new">Install on GitHub</a></p></li>
+        <li><h3>The GitHub App</h3><p class="muted">Install it and pick the repositories: nothing else to set up. It reviews a pull request when it opens or leaves draft; later pushes, when someone with write access comments <code>/review</code> or presses Re-run, and until then the new commit's check says it isn't reviewed. Your code is fetched and read only inside an attested <a href="https://outlayer.ai">OutLayer</a> enclave, running our published build. New installations get a 30-day trial with 40 reviews; each check says how many reviews and days are left. When the trial ends, the check points at <a href="#upgrade">upgrade</a>.</p><p><a class="button primary" href="https://github.com/apps/private-investigator/installations/new">Install on GitHub</a></p></li>
         <li><h3>The GitHub Action</h3><p class="muted">Runs on your own GitHub runner, which already has your code, with your own NEAR AI key, so not even an enclave of ours touches it. About ten minutes to set up the first time.</p><p><a class="button" href="#setup">Set it up</a></p></li>
       </ul>
     </section>
@@ -170,6 +170,14 @@
         <li><h3>Public receipts</h3><p class="muted">Each review's receipt is published in OutLayer's public storage: hashes, signatures, attestations, its count of new findings, and a commitment to the pull request that only the review's link opens. Never your repository's name, code or review.</p></li>
         <li><h3>Counts and timing</h3><p class="muted">How many reviews each installation runs (for the free tier), and when. OutLayer sees when each step runs and how large its requests are.</p></li>
       </ul>
+    </section>
+
+    <section id="upgrade" aria-labelledby="upgrade-title">
+      <div class="section-head">
+        <h2 id="upgrade-title">Upgrade</h2>
+        <p>Paid plans are not live yet. A finished trial leaves a check on the pull request with this page's link; billing and tiers land here next.</p>
+      </div>
+      <p class="muted">Until then, the Action path still runs on your own NEAR AI key with no trial cap. Questions: <a href="https://github.com/MultiAgency/private-ai/issues">open an issue</a>.</p>
     </section>
 
     <section aria-labelledby="limits">
