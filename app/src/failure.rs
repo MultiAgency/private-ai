@@ -78,3 +78,79 @@ impl<T> Mark<T> for anyhow::Result<T> {
         self.map_err(|e| if Failure::of(&e) == Failure::Internal { kind.into() } else { e })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::{anyhow, Context};
+
+    const ALL: [Failure; 9] = [
+        Failure::UnknownJob,
+        Failure::Attestation,
+        Failure::GitHub,
+        Failure::Model,
+        Failure::NoSubmission,
+        Failure::RunCutOff,
+        Failure::Storage,
+        Failure::TooLarge,
+        Failure::Internal,
+    ];
+
+    #[test]
+    fn each_kind_has_a_distinct_fixed_category_that_is_also_its_display() {
+        let categories: Vec<&str> = ALL.iter().map(|f| f.category()).collect();
+        let mut unique = categories.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), ALL.len(), "{categories:?}");
+        for failure in ALL {
+            assert_eq!(failure.to_string(), failure.category());
+        }
+        assert_eq!(Failure::GitHub.category(), "github");
+        assert_eq!(Failure::NoSubmission.category(), "no submission");
+    }
+
+    #[test]
+    fn the_check_run_explains_attestation_and_size_and_says_code_stayed_in_the_enclave() {
+        assert_eq!(Failure::Attestation.explanation(), "Attestation failed, so no code was sent to the model.");
+        assert!(Failure::TooLarge.explanation().contains("too large"));
+        for failure in ALL {
+            assert!(failure.explanation().ends_with("left the enclave.") || failure == Failure::Attestation, "{failure}");
+        }
+        assert_eq!(Failure::Model.explanation(), Failure::Internal.explanation());
+    }
+
+    #[test]
+    fn an_error_with_no_mark_is_internal() {
+        assert_eq!(Failure::of(&anyhow!("boom")), Failure::Internal);
+    }
+
+    #[test]
+    fn a_mark_is_found_anywhere_in_the_chain() {
+        let wrapped: anyhow::Error = anyhow::Error::from(Failure::Storage).context("while saving").context("while finishing");
+        assert_eq!(Failure::of(&wrapped), Failure::Storage);
+        let result: anyhow::Result<()> = Err(anyhow::Error::from(Failure::Model)).context("turn 3");
+        assert_eq!(Failure::of(&result.unwrap_err()), Failure::Model);
+    }
+
+    #[test]
+    fn marking_replaces_the_text_of_an_unmarked_error_with_the_kind() {
+        let marked = Err::<(), _>(anyhow!("403 for private/repo")).mark(Failure::GitHub).unwrap_err();
+        assert_eq!(Failure::of(&marked), Failure::GitHub);
+        assert_eq!(marked.to_string(), "github");
+        assert!(!format!("{marked:?}").contains("private/repo"));
+    }
+
+    #[test]
+    fn the_first_mark_nearest_the_cause_wins() {
+        let inner = Err::<(), _>(anyhow!("cause")).mark(Failure::Attestation);
+        let outer = inner.mark(Failure::GitHub).unwrap_err();
+        assert_eq!(Failure::of(&outer), Failure::Attestation);
+        assert_eq!(Failure::of(&Err::<(), _>(anyhow!("x")).mark(Failure::Internal).unwrap_err()), Failure::Internal);
+    }
+
+    #[test]
+    fn marking_leaves_a_success_alone() {
+        assert_eq!(Ok::<_, anyhow::Error>(7).mark(Failure::Model).unwrap(), 7);
+    }
+}
