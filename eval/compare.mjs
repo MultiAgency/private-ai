@@ -7,8 +7,8 @@
 // Env: NEARAI_API_KEY, GITHUB_TOKEN. The App's runner needs its dry-run build:
 //   cargo build --release --target wasm32-wasip2 --no-default-features --target-dir target/dry
 import { execFile } from "node:child_process";
-import { readdirSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 const { values } = parseArgs({
@@ -72,5 +72,6 @@ const table = [
   "",
 ].join("\n");
 const out = resolve(`eval/feedback/compare-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.md`);
+mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, table);
 console.log(`\n${table}\nwritten to ${out}`);
