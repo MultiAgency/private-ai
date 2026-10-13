@@ -58,13 +58,12 @@ New cases and models are measured before any claim here changes. React 👍 or
 ### The GitHub App (zero setup)
 
 [Install it](https://github.com/apps/private-investigator/installations/new)
-and pick the repositories. It reviews a pull request when it opens, reopens or
-leaves draft, and again when someone with write access comments `/review` or
-presses Re-run on its check. A later push isn't reviewed unless asked: its
-commit gets a check saying so. New installations get a 30-day trial with 40
-reviews; each check says how many reviews and days are left. When the trial
-ends, the check points at the upgrade page. A shared monthly pool still caps
-total free usage across all installations.
+and pick the repositories. Reviews are opt-in: someone with write access
+comments `/review` on the pull request, or presses Re-run on its check. Opening
+or pushing alone does not start a review. New installations get a 30-day trial
+with 40 reviews; each check says how many reviews and days are left. When the
+trial ends, the check points at the upgrade page. A shared monthly pool still
+caps total free usage across all installations.
 
 - **Where your code goes:** an attested OutLayer enclave fetches it from GitHub
   with the App's token and sends it end-to-end encrypted to the attested NEAR
@@ -85,9 +84,9 @@ total free usage across all installations.
   monthly free-pool count, and a sealed marker per request (a hash of its ids,
   and when it ran) that stops a repeated delivery from reviewing twice.
   Uninstalling stops reviews; nothing else holds your code.
-- **Who can start a review:** GitHub's events, through our relay. A `/review`
-  needs write access to the repository; the relay drops one from someone with
-  no history there, and the enclave checks the rest on GitHub.
+- **Who can start a review:** a `/review` comment (write access) or Re-run on
+  the check, through our relay. The relay drops a `/review` from someone with
+  no history in the repository; the enclave checks the rest on GitHub.
 
 ### The GitHub Action (your own runner, your own key)
 
