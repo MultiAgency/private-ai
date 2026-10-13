@@ -64,7 +64,7 @@
       </figure>
     </section>
 
-    <p class="banner" id="installed-banner" hidden><strong>You're set.</strong> Nothing runs until a pull request asks: open one, mark one ready for review, or comment <code>/review</code> on an open one. The <em>Private Investigator</em> check appears on it within seconds, and the review lands a few minutes later, with its receipt.</p>
+    <p class="banner" id="installed-banner" hidden><strong>You're set.</strong> Nothing runs until someone with write access comments <code>/review</code> on an open pull request (or presses Re-run on its check). The <em>Private Investigator</em> check appears within seconds, and the review lands a few minutes later, with its receipt.</p>
 
     <section id="ways" aria-labelledby="ways-title">
       <div class="section-head">
@@ -72,7 +72,7 @@
         <p>The same review and the same receipts, run where you prefer.</p>
       </div>
       <ul class="limits">
-        <li><h3>The GitHub App</h3><p class="muted">Install it and pick the repositories: nothing else to set up. It reviews a pull request when it opens or leaves draft; later pushes, when someone with write access comments <code>/review</code> or presses Re-run, and until then the new commit's check says it isn't reviewed. Your code is fetched and read only inside an attested <a href="https://outlayer.ai">OutLayer</a> enclave, running our published build. New installations get a 30-day trial with 40 reviews; each check says how many reviews and days are left. When the trial ends, the check points at <a href="#upgrade">upgrade</a>.</p><p><a class="button primary" href="https://github.com/apps/private-investigator/installations/new">Install on GitHub</a></p></li>
+        <li><h3>The GitHub App</h3><p class="muted">Install it and pick the repositories: nothing else to set up. Reviews are opt-in: comment <code>/review</code> on a pull request (write access) or press Re-run on its check. Opening or pushing alone does not start a review. Your code is fetched and read only inside an attested <a href="https://outlayer.ai">OutLayer</a> enclave, running our published build. New installations get a 30-day trial with 40 reviews; each check says how many reviews and days are left. When the trial ends, the check points at <a href="#upgrade">upgrade</a>.</p><p><a class="button primary" href="https://github.com/apps/private-investigator/installations/new">Install on GitHub</a></p></li>
         <li><h3>The GitHub Action</h3><p class="muted">Runs on your own GitHub runner, which already has your code, with your own NEAR AI key, so not even an enclave of ours touches it. About ten minutes to set up the first time.</p><p><a class="button" href="#setup">Set it up</a></p></li>
       </ul>
     </section>
