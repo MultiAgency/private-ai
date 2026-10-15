@@ -1,5 +1,6 @@
 # Private Investigator's webhook relay. Deploy: npx wrangler deploy (from relay/),
-# after `wrangler secret put WEBHOOK_SECRET` and `wrangler secret put PAYMENT_KEY`.
+# after `wrangler secret put WEBHOOK_SECRET`, `wrangler secret put PAYMENT_KEY`,
+# and `wrangler secret put STATS_SECRET` (gates GET /stats and /stats.json).
 name = "private-investigator-relay"
 main = "worker.mjs"
 compatibility_date = "2026-10-01"
@@ -13,6 +14,14 @@ COMPUTE_LIMIT = "50000"
 name = "REVIEWS"
 class_name = "Reviews"
 
+[[durable_objects.bindings]]
+name = "STATS"
+class_name = "Stats"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Reviews"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Stats"]
