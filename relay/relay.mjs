@@ -54,6 +54,33 @@ export function reviewRequest(event, payload) {
   return { installation, repo_id: repo, pr, ...(Number.isInteger(comment) && { comment }), ...(Number.isInteger(rerun) && { rerun }) };
 }
 
+/**
+ * Install / repo-scope changes for the stats Durable Object, or null.
+ * Keeps account login (for internal "who installed") and counts — never repo names.
+ */
+export function installationEvent(event, payload) {
+  const installation = payload?.installation?.id;
+  if (!Number.isInteger(installation)) return null;
+  const account = payload?.installation?.account?.login ?? payload?.account?.login ?? null;
+  const account_type = payload?.installation?.account?.type ?? payload?.account?.type ?? null;
+  if (event === "installation") {
+    if (payload.action === "created") {
+      const repos = Array.isArray(payload.repositories) ? payload.repositories.length : 0;
+      return { type: "install", installation, account, account_type, repos };
+    }
+    if (payload.action === "deleted") return { type: "uninstall", installation, account, account_type };
+    if (payload.action === "suspend") return { type: "suspend", installation, account, account_type };
+    if (payload.action === "unsuspend") return { type: "unsuspend", installation, account, account_type };
+  }
+  if (event === "installation_repositories") {
+    const added = Array.isArray(payload.repositories_added) ? payload.repositories_added.length : 0;
+    const removed = Array.isArray(payload.repositories_removed) ? payload.repositories_removed.length : 0;
+    if (!added && !removed) return null;
+    return { type: "repos", installation, account, account_type, added, removed };
+  }
+  return null;
+}
+
 /** OutLayer's input for a new review: ids, and a nonce so its public input hash can't be guessed. */
 export function eventInput(request) {
   return { event: { ...request, nonce: hex(crypto.getRandomValues(new Uint8Array(16))) } };
@@ -76,17 +103,22 @@ export const MAX_QUEUED = 10;
  * - `call(input)`: one OutLayer call; it resolves to the run's output and
  *   throws when there is none.
  * - `log(line)`: ids only.
+ * - `note(event)`: optional observation (queue drops, job outcomes); ids only.
  *
  * Retrying any input is safe: the enclave dedupes a repeated event (its
  * request marker) and a repeated step (a run that never answered counts once,
  * app/src/job.rs `in_flight`).
  */
-export function driver({ storage, call, log = () => {}, now = Date.now }) {
+export function driver({ storage, call, log = () => {}, note = async () => {}, now = Date.now }) {
   return {
     /** Queues an input and wakes the driver, unless the queue is full. */
     async enqueue(input) {
       const queue = (await storage.get("queue")) ?? [];
-      if (queue.length >= MAX_QUEUED) return log("a pull request's queue is full; a request was dropped");
+      if (queue.length >= MAX_QUEUED) {
+        log("a pull request's queue is full; a request was dropped");
+        await note({ type: "queue_drop" });
+        return;
+      }
       await storage.put("queue", [...queue, { input, tries: 0 }]);
       if (!(await storage.getAlarm())) await storage.setAlarm(now());
     },
@@ -113,9 +145,17 @@ export function driver({ storage, call, log = () => {}, now = Date.now }) {
         delay = 30_000 * (head.tries + 1);
       } else if (error) {
         log(`gave up on an input after ${RETRIES} tries: ${error}`);
+        await note({ type: "outlayer_error", error });
       } else {
         if (output.more === true && typeof output.job === "string") queue = [{ input: { step: output.job }, tries: 0 }, ...rest];
-        if (output.job) log(`job ${output.job}: ${output.more ? "more" : output.failed ? `failed (${output.failed})` : "done"}`);
+        if (output.job) {
+          log(`job ${output.job}: ${output.more ? "more" : output.failed ? `failed (${output.failed})` : "done"}`);
+          if (output.more !== true) {
+            await note(output.failed
+              ? { type: "job_failed", job: output.job, failed: output.failed }
+              : { type: "job_done", job: output.job });
+          }
+        }
       }
       await storage.put("queue", queue);
       if (queue.length) await storage.setAlarm(now() + delay);

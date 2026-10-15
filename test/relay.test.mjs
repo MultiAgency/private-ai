@@ -6,7 +6,8 @@ import test from "node:test";
 
 import { readFileSync } from "node:fs";
 
-import { MAX_QUEUED, RETRIES, driver, eventInput, reviewRequest, signedByGitHub } from "../relay/relay.mjs";
+import { MAX_QUEUED, RETRIES, driver, eventInput, installationEvent, reviewRequest, signedByGitHub } from "../relay/relay.mjs";
+import { applyStat, emptyStats, renderStatsHtml, summarize } from "../relay/stats.mjs";
 
 const secret = "webhook-secret";
 const sign = body => `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
@@ -113,8 +114,73 @@ test("the relay calls a failing step often enough for the App to report it stopp
 test("a pull request's queue is bounded", async () => {
   const store = storage();
   const logs = [];
-  const d = driver({ storage: store, call: async () => ({}), log: line => logs.push(line) });
+  const notes = [];
+  const d = driver({ storage: store, call: async () => ({}), log: line => logs.push(line), note: async e => notes.push(e) });
   for (let i = 0; i <= MAX_QUEUED; i++) await d.enqueue({ event: i });
   assert.equal(store.queue().length, MAX_QUEUED);
   assert.match(logs[0], /full/);
+  assert.deepEqual(notes, [{ type: "queue_drop" }]);
+});
+
+test("installation and repo-scope events carry ids and account login, never repo names", () => {
+  assert.deepEqual(installationEvent("installation", {
+    action: "created",
+    installation: { id: 11, account: { login: "Acme", type: "Organization" } },
+    repositories: [{ id: 1, full_name: "Acme/secret" }, { id: 2, full_name: "Acme/other" }],
+  }), { type: "install", installation: 11, account: "Acme", account_type: "Organization", repos: 2 });
+  assert.deepEqual(installationEvent("installation", {
+    action: "deleted",
+    installation: { id: 11, account: { login: "Acme", type: "Organization" } },
+  }), { type: "uninstall", installation: 11, account: "Acme", account_type: "Organization" });
+  assert.deepEqual(installationEvent("installation_repositories", {
+    action: "added",
+    installation: { id: 11, account: { login: "bob", type: "User" } },
+    repositories_added: [{ id: 3, name: "secret-repo" }],
+    repositories_removed: [],
+  }), { type: "repos", installation: 11, account: "bob", account_type: "User", added: 1, removed: 0 });
+  assert.equal(installationEvent("installation", { action: "new_permissions_accepted", installation: { id: 11 } }), null);
+  assert.doesNotMatch(JSON.stringify(installationEvent("installation", {
+    action: "created",
+    installation: { id: 11, account: { login: "Acme", type: "Organization" } },
+    repositories: [{ id: 1, full_name: "Acme/secret" }],
+  })), /secret|full_name|name/);
+});
+
+test("stats accumulate installs, reviews, and outcomes for the dashboard", () => {
+  let s = emptyStats();
+  s = applyStat(s, { type: "install", installation: 11, account: "Acme", account_type: "Organization", repos: 2 }, 1000);
+  s = applyStat(s, { type: "repos", installation: 11, account: "Acme", account_type: "Organization", added: 1, removed: 0 }, 2000);
+  s = applyStat(s, { type: "review_request", installation: 11, repo_id: 22, pr: 7, trigger: "review" }, 3000);
+  s = applyStat(s, { type: "job_done", job: "j1" }, 4000);
+  s = applyStat(s, { type: "job_failed", job: "j2", failed: "trial_exhausted" }, 5000);
+  s = applyStat(s, { type: "outlayer_error", error: "OutLayer 503" }, 6000);
+  const summary = summarize(s);
+  assert.equal(summary.active_installations, 1);
+  assert.equal(summary.active_orgs, 1);
+  assert.equal(summary.repos_on_active, 3);
+  assert.equal(summary.review_requests, 1);
+  assert.equal(summary.jobs_done, 1);
+  assert.equal(summary.jobs_failed, 1);
+  assert.equal(summary.outlayer_errors, 1);
+  assert.equal(summary.failed_by_reason.trial_exhausted, 1);
+  assert.equal(summary.installations[0].account, "Acme");
+  const html = renderStatsHtml(summary);
+  assert.match(html, /Active installs/);
+  assert.match(html, /Acme/);
+  assert.doesNotMatch(html, /secret-repo|private text/);
+});
+
+test("the driver notes job outcomes and OutLayer give-ups", async () => {
+  const store = storage();
+  const notes = [];
+  const d = driver({
+    storage: store,
+    call: async () => ({ job: "j", more: false, failed: "run_cutoff" }),
+    note: async e => notes.push(e),
+    now: () => 0,
+  });
+  await d.enqueue({ event: 1 });
+  store.fired();
+  await d.alarm();
+  assert.deepEqual(notes, [{ type: "job_failed", job: "j", failed: "run_cutoff" }]);
 });
