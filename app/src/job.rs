@@ -167,19 +167,127 @@ pub struct Settings {
 /// a duplicate delivery (a retried webhook), not a new request.
 pub const DUPLICATE_WINDOW_SECS: u64 = 600;
 
-/// The free tier's monthly limits (owner, 2026-10-05: 10 per installation, $20
-/// a month). The enclave does not see prices, so the budget is a count: a
-/// 3-pass review is about 3 cents of inference plus about 10 OutLayer steps,
-/// ~10 cents in all, so $20 is about 200 reviews.
+/// App-install trial and the operator's shared monthly pool. The enclave does
+/// not see prices, so both are counts: a 3-pass review is about 3 cents of
+/// inference plus about 10 OutLayer steps (~10 cents). Trial is 30 days from
+/// the installation's first review and 40 reviews total; the global pool is
+/// about $20/month of author budget (~200 reviews) shared across all trials.
 pub struct Caps {
-    pub per_installation: u64,
-    pub global: u64,
+    pub trial_secs: u64,
+    pub trial_reviews: u64,
+    pub global_monthly: u64,
 }
 
-pub const FREE_TIER: Caps = Caps { per_installation: 10, global: 200 };
+pub const FREE_TIER: Caps = Caps {
+    trial_secs: 30 * 24 * 3600,
+    trial_reviews: 40,
+    global_monthly: 200,
+};
+
+/// Where a finished trial sends people until paid tiers exist.
+pub fn upgrade_url() -> &'static str {
+    crate::review::spec()["upgrade_url"].as_str().unwrap_or("https://multiagency.github.io/private-ai/#upgrade")
+}
 
 fn count(store: &dyn Store, key: &str) -> Result<u64> {
     Ok(store.get(key)?.and_then(|v| String::from_utf8(v).ok()).and_then(|v| v.parse().ok()).unwrap_or(0))
+}
+
+fn trial_key(installation: u64) -> String {
+    format!("trial:installation:{installation}")
+}
+
+/// One installation's trial: when the first review ran, and how many have run.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Trial {
+    started: u64,
+    used: u64,
+}
+
+fn load_trial(store: &dyn Store, installation: u64) -> Result<Option<Trial>> {
+    Ok(match store.get(&trial_key(installation))? {
+        Some(bytes) => Some(serde_json::from_slice(&bytes)?),
+        None => None,
+    })
+}
+
+fn save_trial(store: &dyn Store, installation: u64, trial: &Trial) -> Result<()> {
+    store.set(&trial_key(installation), serde_json::to_string(trial)?.as_bytes())
+}
+
+/// Why a capped installation was refused, for the check title and attested output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapReason {
+    TrialEnded,
+    TrialReviews,
+    Global,
+}
+
+impl CapReason {
+    fn title(self) -> &'static str {
+        match self {
+            Self::TrialEnded => "Trial ended",
+            Self::TrialReviews => "Trial reviews used",
+            Self::Global => "Free tier at capacity",
+        }
+    }
+
+    fn summary(self, caps: &Caps) -> String {
+        let upgrade = upgrade_url();
+        match self {
+            Self::TrialEnded => format!(
+                "This installation's {}-day trial has ended. Paid plans are next: {upgrade}",
+                caps.trial_secs / 86_400
+            ),
+            Self::TrialReviews => format!(
+                "This installation has used its {} trial reviews. Paid plans are next: {upgrade}",
+                caps.trial_reviews
+            ),
+            Self::Global => "The shared free pool is at capacity this month. Reviews resume on the 1st.".into(),
+        }
+    }
+
+    fn attests(self) -> &'static str {
+        match self {
+            Self::TrialEnded => "trial_ended",
+            Self::TrialReviews => "trial_reviews",
+            Self::Global => "global",
+        }
+    }
+}
+
+/// Days still left in the trial, at least 1 while any seconds remain.
+fn trial_days_left(caps: &Caps, started: u64, now: u64) -> u64 {
+    let left = caps.trial_secs.saturating_sub(now.saturating_sub(started));
+    left.div_ceil(86_400).max(if left > 0 { 1 } else { 0 })
+}
+
+/// Takes one review from the installation's trial and the global monthly pool.
+/// Returns the check note when allowed, or the reason it is refused.
+fn take_entitlement(store: &dyn Store, installation: u64, now: u64, caps: &Caps) -> Result<std::result::Result<String, CapReason>> {
+    let mut trial = load_trial(store, installation)?.unwrap_or(Trial { started: now, used: 0 });
+    if now.saturating_sub(trial.started) >= caps.trial_secs {
+        return Ok(Err(CapReason::TrialEnded));
+    }
+    if trial.used >= caps.trial_reviews {
+        return Ok(Err(CapReason::TrialReviews));
+    }
+    let month = &crate::iso_time(now, 0)[..7];
+    let all = format!("cap:{month}:all");
+    let used_all = count(store, &all)?;
+    if used_all >= caps.global_monthly {
+        return Ok(Err(CapReason::Global));
+    }
+    trial.used += 1;
+    save_trial(store, installation, &trial)?;
+    store.set(&all, (used_all + 1).to_string().as_bytes())?;
+    let reviews_left = caps.trial_reviews - trial.used;
+    let days = trial_days_left(caps, trial.started, now);
+    Ok(Ok(format!(
+        "Trial: {reviews_left} of {} reviews left, {days} day{} left.",
+        caps.trial_reviews,
+        if days == 1 { "" } else { "s" }
+    )))
 }
 
 fn key(job: &str) -> String {
@@ -280,23 +388,19 @@ pub fn start(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, ins
         }
     }
     let free_left = if let (Some(caps), true) = (&settings.caps, installation > 0) {
-        let month = &crate::iso_time(run.now().0, 0)[..7];
-        let (mine, all) = (format!("cap:{month}:installation:{installation}"), format!("cap:{month}:all"));
-        let (used, used_all) = (count(store, &mine)?, count(store, &all)?);
-        if used >= caps.per_installation || used_all >= caps.global {
-            let summary = if used >= caps.per_installation {
-                format!("This installation has used its {} free reviews this month. Reviews resume on the 1st.", caps.per_installation)
-            } else {
-                "The free tier is at capacity this month. Reviews resume on the 1st.".to_string()
-            };
-            forge.check_run(None, &json!({ "name": spec()["name"], "head_sha": head, "status": "completed", "conclusion": "neutral", "output": { "title": "Monthly free reviews used", "summary": summary } }))?;
-            let mut step = Step::plain(Outcome::Skipped);
-            step.attests.insert("capped".into(), json!(true));
-            return Ok((job.to_string(), step));
+        match take_entitlement(store, installation, run.now().0, caps)? {
+            Ok(left) => Some(left),
+            Err(reason) => {
+                forge.check_run(None, &json!({
+                    "name": spec()["name"], "head_sha": head, "status": "completed", "conclusion": "neutral",
+                    "output": { "title": reason.title(), "summary": reason.summary(caps) },
+                }))?;
+                let mut step = Step::plain(Outcome::Skipped);
+                step.attests.insert("capped".into(), json!(true));
+                step.attests.insert("reason".into(), json!(reason.attests()));
+                return Ok((job.to_string(), step));
+            }
         }
-        store.set(&mine, (used + 1).to_string().as_bytes())?;
-        store.set(&all, (used_all + 1).to_string().as_bytes())?;
-        Some(format!("{} of {} free reviews left this month.", caps.per_installation - (used + 1), caps.per_installation))
     } else {
         None
     };

@@ -21,6 +21,7 @@
   "limits_note": "_An AI second opinion, not a sign-off: it can miss regressions that span files, above all in money and permission paths._",
   "feedback_note": "_Was a finding right? React 👍 or 👎 on it: that is how this reviewer is measured and improved._",
   "checker_url": "https://multiagency.github.io/private-ai/#check",
+  "upgrade_url": "https://multiagency.github.io/private-ai/#upgrade",
   "proof_line": "Read only inside an attested NEAR AI enclave, end-to-end encrypted, with every reply signed by it. [Check the receipt]({checker}).",
   "app_proof_line": "Fetched and read only inside attested enclaves (OutLayer for the code, NEAR AI for the model), end-to-end encrypted, with every step attested and every reply signed. [Check the receipt]({checker}).",
   "patch_limit": 20000,

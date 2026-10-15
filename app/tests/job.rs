@@ -153,22 +153,38 @@ fn a_dry_run_writes_nothing_to_github_and_answers_with_counts_only() {
 }
 
 #[test]
-fn the_free_tier_stops_an_installation_at_its_monthly_cap_and_says_so() {
+fn the_trial_stops_an_installation_when_reviews_or_days_run_out() {
     use private_investigator::job::Caps;
     let (store, hub, young) = (Memory::default(), Hub::default(), at(0));
-    let capped = Settings { caps: Some(Caps { per_installation: 2, global: 100 }), ..settings(1) };
+    let capped = Settings { caps: Some(Caps { trial_secs: 30 * 86_400, trial_reviews: 2, global_monthly: 100 }), ..settings(1) };
     for (job, pr) in [("c1", 1), ("c2", 2)] {
         assert_eq!(start(&store, &hub, &young, job, 5, "o/r", pr, &capped).unwrap().1.outcome, Outcome::More);
     }
+    let queued = hub.checks.borrow()[0]["body"]["output"]["summary"].as_str().unwrap().to_string();
+    assert!(queued.contains("Trial: 1 of 2 reviews left"), "{queued}");
     let (_, third) = start(&store, &hub, &young, "c3", 5, "o/r", 3, &capped).unwrap();
     assert_eq!(third.outcome, Outcome::Skipped);
-    assert_eq!(third.to_json("c3")["capped"], true);
+    assert_eq!((third.to_json("c3")["capped"].clone(), third.to_json("c3")["reason"].clone()), (json!(true), json!("trial_reviews")));
     let last = hub.checks.borrow().last().unwrap().clone();
-    assert_eq!(last["body"]["output"]["title"], "Monthly free reviews used");
+    assert_eq!(last["body"]["output"]["title"], "Trial reviews used");
+    assert!(last["body"]["output"]["summary"].as_str().unwrap().contains("upgrade"));
     assert!(!store.keys().iter().any(|k| k == "job:c3"), "no job is opened");
-    assert_eq!(start(&store, &hub, &young, "c4", 6, "o/r", 4, &capped).unwrap().1.outcome, Outcome::More, "another installation has its own count");
-    let all = Settings { caps: Some(Caps { per_installation: 10, global: 3 }), ..settings(1) };
-    assert_eq!(start(&store, &hub, &young, "c5", 7, "o/r", 5, &all).unwrap().1.outcome, Outcome::Skipped, "the global budget binds everyone");
+    assert_eq!(start(&store, &hub, &young, "c4", 6, "o/r", 4, &capped).unwrap().1.outcome, Outcome::More, "another installation has its own trial");
+
+    let (store, hub) = (Memory::default(), Hub::default());
+    let short = Settings { caps: Some(Caps { trial_secs: 10, trial_reviews: 40, global_monthly: 100 }), ..settings(1) };
+    assert_eq!(start(&store, &hub, &at_now(1_000), "t1", 8, "o/r", 1, &short).unwrap().1.outcome, Outcome::More);
+    let (_, expired) = start(&store, &hub, &at_now(1_011), "t2", 8, "o/r", 2, &short).unwrap();
+    assert_eq!(expired.outcome, Outcome::Skipped);
+    assert_eq!(expired.to_json("t2")["reason"], "trial_ended");
+    assert_eq!(hub.checks.borrow().last().unwrap()["body"]["output"]["title"], "Trial ended");
+
+    let (store, hub) = (Memory::default(), Hub::default());
+    let all = Settings { caps: Some(Caps { trial_secs: 30 * 86_400, trial_reviews: 40, global_monthly: 2 }), ..settings(1) };
+    assert_eq!(start(&store, &hub, &young, "g1", 9, "o/r", 1, &all).unwrap().1.outcome, Outcome::More);
+    assert_eq!(start(&store, &hub, &young, "g2", 10, "o/r", 2, &all).unwrap().1.outcome, Outcome::More);
+    let (_, blocked) = start(&store, &hub, &young, "g3", 11, "o/r", 3, &all).unwrap();
+    assert_eq!((blocked.outcome, blocked.to_json("g3")["reason"].clone()), (Outcome::Skipped, json!("global")), "the global budget binds everyone");
 }
 
 #[test]
