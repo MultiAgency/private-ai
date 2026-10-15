@@ -24,6 +24,22 @@ export async function reviewStarter(event, gh) {
   return { login, role, allowed: WRITE_ROLES.includes(role) };
 }
 
+/** Comment-triggered runs spend the model key only after this separate job passes. */
+export async function reviewGate(event, gh, { repo, allowForks = true } = {}) {
+  if (!event) return { allowed: true };
+  if (event.action !== "created" || !event.issue?.pull_request || !/^\/review(?:\s|$)/.test(event.comment?.body ?? "")) {
+    return { allowed: false, reason: "Not a /review command on a pull request." };
+  }
+  const starter = await reviewStarter(event, gh);
+  if (!starter?.allowed) return { allowed: false, reason: starter ? refusal(starter) : "No review requester." };
+  const pr = await gh.pull(event.issue.number);
+  if (pr.state !== "open" || pr.draft) return { allowed: false, reason: "Not reviewing a closed or draft pull request." };
+  if (!allowForks && pr.head?.repo?.full_name?.toLowerCase() !== repo?.toLowerCase()) {
+    return { allowed: false, reason: "Fork reviews are not enabled in this workflow." };
+  }
+  return { allowed: true };
+}
+
 /** The GitHub Actions event that started this run, when it was a comment. */
 export function commentEvent(env = process.env) {
   return env.GITHUB_EVENT_NAME === "issue_comment" ? JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8")) : null;
@@ -33,8 +49,10 @@ export const refusal = ({ login, role }) =>
   `Not reviewing: @${login} has the ${role} role, and starting a review with /review needs write access.`;
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const starter = await reviewStarter(commentEvent(), github(process.env.GITHUB_TOKEN, process.env.GITHUB_REPOSITORY));
-  const allowed = !starter || starter.allowed;
-  if (!allowed) console.log(`::notice::${refusal(starter)}`);
+  const repo = process.env.GITHUB_REPOSITORY;
+  const { allowed, reason } = await reviewGate(commentEvent(), github(process.env.GITHUB_TOKEN, repo), {
+    repo, allowForks: process.env.ALLOW_FORKS !== "false",
+  });
+  if (!allowed) console.log(`::notice::${reason}`);
   appendFileSync(process.env.GITHUB_OUTPUT, `allowed=${allowed}\n`);
 }

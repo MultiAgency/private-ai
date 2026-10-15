@@ -1,3 +1,5 @@
+import { CallError } from "./outlayer.mjs";
+
 // What the relay does with a GitHub webhook, kept free of Cloudflare so it can
 // be tested anywhere: check GitHub's signature, decide whether the event asks
 // for a review, and reduce it to ids. The payload (titles, descriptions,
@@ -86,32 +88,29 @@ export function eventInput(request) {
   return { event: { ...request, nonce: hex(crypto.getRandomValues(new Uint8Array(16))) } };
 }
 
-// Calls on one input before giving up. A step whose runs keep getting killed
-// fails, and says so on its check run, only on the call after
-// app/src/job.rs STEP_RETRIES of them; any fewer, and the check would be
-// left saying "Following leads" for good (test/relay.test.mjs keeps them in step).
+// A known failed execution can be retried: the enclave dedupes the event or
+// resumes its saved step. A submission with an unknown outcome cannot.
 export const RETRIES = 4;
-/** Inputs a pull request may have waiting; more are dropped (a flood of requests). */
 export const MAX_QUEUED = 10;
+export const POLL_INTERVAL = 10_000;
+export const PENDING_LIMIT = 15 * 60_000;
 
-/**
- * One pull request's driver: a queue of OutLayer inputs, worked through one
- * call per alarm, and again while the output says there is more.
- *
- * - `storage`: `get`/`put` of the queue, and `getAlarm`/`setAlarm` (ms since
- *   the epoch), as a Durable Object's storage has them.
- * - `call(input)`: one OutLayer call; it resolves to the run's output and
- *   throws when there is none.
- * - `log(line)`: ids only.
- * - `note(event)`: optional observation (queue drops, job outcomes); ids only.
- *
- * Retrying any input is safe: the enclave dedupes a repeated event (its
- * request marker) and a repeated step (a run that never answered counts once,
- * app/src/job.rs `in_flight`).
- */
-export function driver({ storage, call, log = () => {}, note = async () => {}, now = Date.now }) {
+/** One HTTP request per alarm; accepted call ids survive restarts and retries. */
+export function driver({ storage, execution, log = () => {}, note = async () => {}, now = Date.now }) {
+  // Re-read after I/O so a request enqueued during a call stays behind its head.
+  async function save(head, delay) {
+    const [, ...rest] = (await storage.get("queue")) ?? [];
+    const queue = head ? [head, ...rest] : rest;
+    await storage.put("queue", queue);
+    if (queue.length && !queue[0].paused) await storage.setAlarm(now() + delay);
+  }
+  async function pause(head, error) {
+    await save({ ...head, paused: true }, 0);
+    const call = head.callId ? ` (call ${head.callId})` : "";
+    log(`review paused${call}: ${error}`);
+    await note({ type: "outlayer_error", error, ...(head.callId && { call_id: head.callId }) });
+  }
   return {
-    /** Queues an input and wakes the driver, unless the queue is full. */
     async enqueue(input) {
       const queue = (await storage.get("queue")) ?? [];
       if (queue.length >= MAX_QUEUED) {
@@ -119,46 +118,88 @@ export function driver({ storage, call, log = () => {}, note = async () => {}, n
         await note({ type: "queue_drop" });
         return;
       }
-      await storage.put("queue", [...queue, { input, tries: 0 }]);
-      if (!(await storage.getAlarm())) await storage.setAlarm(now());
+      // A fresh command may resume polling an existing call, never resubmit it.
+      if (queue[0]?.paused && queue[0].callId) {
+        queue[0] = { ...queue[0], paused: false, waitingSince: now(), pollFailures: 0 };
+      }
+      await storage.put("queue", [...queue, { input, tries: 0, protocol: 1 }]);
+      if (!queue[0]?.paused && !(await storage.getAlarm())) await storage.setAlarm(now());
     },
 
-    /** One call on the queue's head, then the queue as the call left it. */
     async alarm() {
-      const head = ((await storage.get("queue")) ?? [])[0];
-      if (!head) return;
-      let output;
-      let error;
+      let head = ((await storage.get("queue")) ?? [])[0];
+      if (!head || head.paused) return;
+      if (head.protocol !== 1 || (head.submitting && !head.callId)) {
+        await pause(head, "submission outcome unknown; not resubmitting");
+        return;
+      }
+      let result;
       try {
-        output = await call(head.input);
-        if (output == null) throw new Error("the run returned no output");
-      } catch (e) {
-        error = e.message;
-      }
-      // Read again: requests that arrived during the call joined the queue's
-      // end, so the head is still first.
-      const [, ...rest] = (await storage.get("queue")) ?? [head];
-      let queue = rest;
-      let delay = 0;
-      if (error && head.tries + 1 < RETRIES) {
-        queue = [{ ...head, tries: head.tries + 1 }, ...rest];
-        delay = 30_000 * (head.tries + 1);
-      } else if (error) {
-        log(`gave up on an input after ${RETRIES} tries: ${error}`);
-        await note({ type: "outlayer_error", error });
-      } else {
-        if (output.more === true && typeof output.job === "string") queue = [{ input: { step: output.job }, tries: 0 }, ...rest];
-        if (output.job) {
-          log(`job ${output.job}: ${output.more ? "more" : output.failed ? `failed (${output.failed})` : "done"}`);
-          if (output.more !== true) {
-            await note(output.failed
-              ? { type: "job_failed", job: output.job, failed: output.failed }
-              : { type: "job_done", job: output.job });
-          }
+        if (head.callId) {
+          result = await execution.poll(head.callId);
+        } else {
+          // Crash between POST and saving its id is ambiguous, so fail closed.
+          // The watchdog alarm also recovers a handler interrupted by deployment.
+          head = { ...head, submitting: true };
+          await save(head, 30_000);
+          result = await execution.start(head.input);
+          head = { ...head, submitting: false, callId: result.call_id, waitingSince: now() };
         }
+      } catch (e) {
+        const error = e instanceof CallError ? e.message : "OutLayer request failed";
+        if (head.callId) {
+          const failures = (head.pollFailures ?? 0) + 1;
+          if (failures < RETRIES) await save({ ...head, pollFailures: failures }, 30_000 * failures);
+          else await pause(head, error);
+        } else if (e instanceof CallError && e.refused) {
+          const tries = head.tries + 1;
+          if (e.retryable && tries < RETRIES) {
+            await save({ input: head.input, tries, protocol: 1 }, Math.max(30_000 * tries, e.delay));
+          } else {
+            await save(null, 0);
+            log(`OutLayer refused review: ${error}`);
+            await note({ type: "outlayer_error", error });
+          }
+        } else {
+          await pause(head, `${error}; submission outcome unknown; not resubmitting`);
+        }
+        return;
       }
-      await storage.put("queue", queue);
-      if (queue.length) await storage.setAlarm(now() + delay);
+
+      if (result.status === "pending") {
+        head = { ...head, pollFailures: 0 };
+        if (now() - head.waitingSince >= PENDING_LIMIT) {
+          await pause(head, "OutLayer execution still pending after 15 minutes");
+        } else {
+          await save(head, POLL_INTERVAL);
+          log(`call ${head.callId}: pending`);
+        }
+        return;
+      }
+      const output = result.output;
+      if (result.status === "failed" || output == null || typeof output !== "object" || Array.isArray(output)) {
+        const error = result.status === "failed" ? "OutLayer execution failed" : "OutLayer execution returned no valid output";
+        if (head.tries + 1 < RETRIES) {
+          await save({ input: head.input, tries: head.tries + 1, protocol: 1 }, 30_000 * (head.tries + 1));
+        } else {
+          await save(null, 0);
+          log(`gave up on an input after ${RETRIES} tries: ${error}`);
+          await note({ type: "outlayer_error", error, call_id: head.callId });
+        }
+        return;
+      }
+      await save(output.more === true && typeof output.job === "string"
+        ? { input: { step: output.job }, tries: 0, protocol: 1 } : null, 0);
+      if (output.job) {
+        log(`job ${output.job}: ${output.more ? "more" : output.failed ? `failed (${output.failed})` : "done"}`);
+        if (output.more !== true) {
+          await note(output.failed
+            ? { type: "job_failed", job: output.job, failed: output.failed }
+            : { type: "job_done", job: output.job });
+        }
+      } else if (output.failed) {
+        await note({ type: "job_failed", failed: output.failed });
+      }
     },
   };
 }

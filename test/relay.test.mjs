@@ -6,8 +6,16 @@ import test from "node:test";
 
 import { readFileSync } from "node:fs";
 
-import { MAX_QUEUED, RETRIES, driver, eventInput, installationEvent, reviewRequest, signedByGitHub } from "../relay/relay.mjs";
+import { MAX_QUEUED, RETRIES, POLL_INTERVAL, PENDING_LIMIT, driver as createDriver, eventInput, installationEvent, reviewRequest, signedByGitHub } from "../relay/relay.mjs";
 import { applyStat, emptyStats, renderStatsHtml, summarize } from "../relay/stats.mjs";
+import { CallError, outlayer } from "../relay/outlayer.mjs";
+
+const CALL_ID = "11111111-2222-3333-4444-555555555555";
+// Existing job fixtures finish immediately; asynchronous fixtures below span alarms.
+const driver = ({ call, ...options }) => createDriver({ ...options, execution: {
+  start: async input => ({ call_id: CALL_ID, status: "completed", output: await call(input) }),
+  poll: async () => { throw new Error("unexpected poll"); },
+} });
 
 const secret = "webhook-secret";
 const sign = body => `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
@@ -183,4 +191,195 @@ test("the driver notes job outcomes and OutLayer give-ups", async () => {
   store.fired();
   await d.alarm();
   assert.deepEqual(notes, [{ type: "job_failed", job: "j", failed: "run_cutoff" }]);
+});
+
+test("a pending call is submitted once and polled across driver restarts", async () => {
+  const store = storage();
+  let submissions = 0;
+  let polls = 0;
+  const execution = {
+    start: async () => { submissions++; return { call_id: CALL_ID, status: "pending" }; },
+    poll: async id => {
+      assert.equal(id, CALL_ID);
+      return ++polls < 2 ? { status: "pending" } : { status: "completed", output: { job: "j", more: false } };
+    },
+  };
+  const d = () => createDriver({ storage: store, execution, now: () => 1000 });
+  await d().enqueue({ event: 1 });
+  store.fired();
+  await d().alarm();
+  assert.equal(store.queue()[0].callId, CALL_ID);
+  assert.equal(store.fired(), 1000 + POLL_INTERVAL);
+  await d().alarm();
+  store.fired();
+  await d().alarm();
+  assert.equal(submissions, 1);
+  assert.equal(polls, 2);
+  assert.deepEqual(store.queue(), []);
+});
+
+test("polling errors keep the same call and pause instead of submitting twice", async () => {
+  const store = storage();
+  let submissions = 0;
+  const notes = [];
+  const d = createDriver({ storage: store, note: async e => notes.push(e), execution: {
+    start: async () => { submissions++; return { call_id: CALL_ID, status: "pending" }; },
+    poll: async () => { throw new CallError("OutLayer HTTP 524"); },
+  } });
+  await d.enqueue({ event: 1 });
+  store.fired();
+  await d.alarm();
+  for (let i = 0; i < RETRIES; i++) { store.fired(); await d.alarm(); }
+  assert.equal(submissions, 1);
+  assert.equal(store.queue()[0].callId, CALL_ID);
+  assert.equal(store.queue()[0].paused, true);
+  assert.equal(notes[0].call_id, CALL_ID);
+  await d.enqueue({ event: 2 });
+  assert.equal(store.queue()[0].paused, false, "a fresh command resumes status polling");
+  store.fired();
+  await d.alarm();
+  assert.equal(submissions, 1);
+});
+
+test("an ambiguous POST or interrupted submission is never retried", async () => {
+  for (const interrupted of [false, true]) {
+    const store = storage();
+    let submissions = 0;
+    const d = createDriver({ storage: store, execution: {
+      start: async () => { submissions++; throw new CallError("OutLayer HTTP 524"); },
+    } });
+    await d.enqueue({ event: 1 });
+    if (interrupted) await store.put("queue", [{ input: { event: 1 }, tries: 0, protocol: 1, submitting: true }]);
+    store.fired();
+    await d.alarm();
+    assert.equal(store.queue()[0].paused, true);
+    await d.enqueue({ event: 2 });
+    await d.alarm();
+    assert.equal(submissions, interrupted ? 0 : 1);
+  }
+});
+
+test("a stalled pending execution is retained and reported, without retrying it", async () => {
+  const store = storage();
+  let time = 0;
+  const notes = [];
+  const d = createDriver({ storage: store, now: () => time, note: async e => notes.push(e), execution: {
+    start: async () => ({ call_id: CALL_ID, status: "pending" }),
+    poll: async () => ({ status: "pending" }),
+  } });
+  await d.enqueue({ event: 1 });
+  store.fired(); await d.alarm();
+  time = PENDING_LIMIT;
+  store.fired(); await d.alarm();
+  assert.equal(store.queue()[0].paused, true);
+  assert.equal(store.queue()[0].callId, CALL_ID);
+  assert.equal(await store.getAlarm(), null);
+  assert.match(notes[0].error, /pending after 15 minutes/);
+});
+
+test("only known pre-queue refusals can resubmit, respecting Retry-After", async () => {
+  const store = storage();
+  let submissions = 0;
+  const d = createDriver({ storage: store, now: () => 0, execution: {
+    start: async () => {
+      if (++submissions === 1) throw new CallError("OutLayer HTTP 503", { refused: true, retryable: true, delay: 60_000 });
+      return { call_id: CALL_ID, status: "completed", output: {} };
+    },
+  } });
+  await d.enqueue({ event: 1 });
+  store.fired(); await d.alarm();
+  assert.equal(store.queue()[0].submitting, undefined);
+  assert.equal(store.fired(), 60_000);
+  await d.alarm();
+  assert.equal(submissions, 2);
+  assert.deepEqual(store.queue(), []);
+});
+
+test("a request arriving while a call is polled stays behind its next step", async () => {
+  const store = storage();
+  let d;
+  d = createDriver({ storage: store, execution: {
+    start: async () => ({ call_id: CALL_ID, status: "pending" }),
+    poll: async () => {
+      await d.enqueue({ event: 2 });
+      return { status: "completed", output: { job: "j", more: true } };
+    },
+  } });
+  await d.enqueue({ event: 1 });
+  store.fired(); await d.alarm();
+  store.fired(); await d.alarm();
+  assert.deepEqual(store.queue().map(i => i.input), [{ step: "j" }, { event: 2 }]);
+});
+
+test("the HTTP transport submits asynchronously and polls only the saved API call id", async () => {
+  const requests = [];
+  const api = outlayer({ project: "hack.near/private-investigator", paymentKey: "secret", computeLimit: "50000", fetch: async (url, init) => {
+    requests.push({ url, init });
+    return Response.json({ call_id: CALL_ID, status: requests.length === 1 ? "pending" : "completed", output: {} });
+  } });
+  await api.start({ event: 1 });
+  await api.poll(CALL_ID);
+  assert.deepEqual(JSON.parse(requests[0].init.body), { input: { event: 1 }, async: true, resource_limits: { max_execution_seconds: 180 } });
+  assert.equal(requests[0].init.headers["x-compute-limit"], "50000");
+  assert.equal(requests[1].url, `https://api.outlayer.ai/calls/${CALL_ID}`);
+  assert.equal(requests[1].init.method, "GET");
+  assert.equal(requests[1].init.body, undefined);
+  await assert.rejects(api.poll("https://attacker.invalid/"), /call id is invalid/);
+});
+
+test("the transport classifies refusals and never exposes upstream body text", async () => {
+  for (const [status, reason, retryable, refused] of [
+    [503, "upstream_unavailable", true, true], [503, "keystore_error", true, true],
+    [503, "unknown", false, false], [524, undefined, false, false],
+    [500, "internal_error", false, false], [408, "timeout", false, false],
+    [429, "rate_limit_exceeded", true, true], [403, "project_not_allowed", false, true],
+  ]) {
+    const api = outlayer({ fetch: async () => Response.json({ reason, error: "private content and secret" }, { status, headers: { "retry-after": "45" } }) });
+    await assert.rejects(api.start({}), e => {
+      assert.equal(e.retryable, retryable);
+      assert.equal(e.refused, refused);
+      assert.equal(e.delay, 45_000);
+      assert.doesNotMatch(e.message, /private|secret/);
+      return true;
+    });
+  }
+  const api = outlayer({ fetch: async () => { throw new Error("payment key: secret"); } });
+  await assert.rejects(api.start({}), e => !e.refused && !/secret/.test(e.message));
+});
+
+test("malformed accepted results cannot trigger a second submission", async () => {
+  for (const result of [{ status: "pending" }, { call_id: "../bad", status: "pending" }, { call_id: CALL_ID, status: "unknown" }]) {
+    const api = outlayer({ fetch: async () => Response.json(result) });
+    await assert.rejects(api.start({}), e => !e.refused && !e.retryable);
+  }
+  const api = outlayer({ fetch: async () => Response.json({ call_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", status: "pending" }) });
+  await assert.rejects(api.poll(CALL_ID), /different call id/);
+});
+
+test("a deployment never replays a legacy synchronous queue with unknown acceptance", async () => {
+  const store = storage();
+  await store.put("queue", [{ input: { event: 1 }, tries: 1 }]);
+  let calls = 0;
+  const d = createDriver({ storage: store, execution: { start: async () => { calls++; } } });
+  await d.alarm();
+  assert.equal(calls, 0);
+  assert.equal(store.queue()[0].paused, true);
+});
+
+test("a confirmed failed execution is retried, but terminal admission refusals are not", async () => {
+  const store = storage();
+  let calls = 0;
+  const d = createDriver({ storage: store, execution: {
+    start: async () => {
+      calls++;
+      if (calls === 1) return { call_id: CALL_ID, status: "failed" };
+      throw new CallError("OutLayer HTTP 401", { refused: true });
+    },
+  } });
+  await d.enqueue({ event: 1 });
+  store.fired(); await d.alarm();
+  assert.equal(store.queue()[0].callId, undefined, "a settled failed call can start a recovery run");
+  store.fired(); await d.alarm();
+  assert.equal(calls, 2);
+  assert.deepEqual(store.queue(), []);
 });
