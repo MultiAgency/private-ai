@@ -94,16 +94,52 @@ Runs on your GitHub runner, which already has your code, with your own NEAR AI
 Cloud key, so no enclave of ours touches it. [The page](https://multiagency.github.io/private-ai/#setup)
 writes the workflow for a repository, pinned to the latest commit. By hand: add
 a workflow, and a NEAR AI Cloud API key as the `NEARAI_API_KEY` secret.
+The workflow reviews new commits and accepts `/review` comments from someone
+with write access. It must be on the default branch for comment events to run.
 
 ```yaml
 name: private-review
+
+# Private AI review: the model reads this pull request only inside a NEAR AI
+# Cloud enclave, end-to-end encrypted. See https://github.com/MultiAgency/private-ai
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
+  issue_comment:
+    types: [created]
+  # Run by hand (Actions tab, Run workflow) to check the setup: no code is read.
+  workflow_dispatch:
+
 jobs:
-  review:
-    if: ${{ !github.event.pull_request.draft }}
+  # A refused comment cannot load the model key or cancel an ongoing review.
+  gate:
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name == github.repository
+        && !github.event.pull_request.draft)
+      || (github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && startsWith(github.event.comment.body, '/review')
+        && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      allowed: ${{ steps.gate.outputs.allowed }}
+    steps:
+      - id: gate
+        uses: MultiAgency/private-ai/review/gate@<commit sha>
+        with:
+          allow-forks: "false"
+  review:
+    needs: gate
+    if: needs.gate.outputs.allowed == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: private-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
     permissions:
       contents: read
       pull-requests: write
@@ -119,11 +155,26 @@ which downloads as that file, ready for the page's checker. It names the pull
 request and commits it reviewed; what ties it to the review is the hash the
 review quotes, so check that the two match.
 
-**Forks.** Pull requests from forks get no secrets, so a `/review` comment
-starts their review, from someone with write access to the repository. Put
-[`review/gate`](review/gate/action.yml) in a job of its own ahead of the review
-job, as [the page](https://multiagency.github.io/private-ai/#setup) writes it
-when you tick the fork option. The gate looks up the commenter's role. A
+**Existing setups.** Older generated workflows only listen for `/review` when
+fork reviews are enabled. To migrate:
+
+1. Replace the complete workflow with the example above, or regenerate it with
+   the setup page. Adding `issue_comment` alone leaves the old job condition in
+   place, which can still skip comment-triggered reviews.
+2. Replace `<commit sha>` in both `uses` lines with the same 40-character commit
+   containing this fix. Keep the separate gate job, its `pull-requests: read`
+   permission, and the explicit `allow-forks` setting. The existing
+   `NEARAI_API_KEY` secret needs no change.
+3. Merge the workflow into the repository's default branch. On an open,
+   non-draft PR, comment `/review` as someone with write access. The gate should
+   pass, followed by a review and a receipt artifact. Fork PRs require
+   `allow-forks: "true"`; read-only commenters cannot start a review.
+
+**Forks.** Pull requests from forks get no secrets on their pull-request events.
+To accept authorized `/review` comments on them, tick the fork option on
+[the page](https://multiagency.github.io/private-ai/#setup), or set
+`allow-forks: "true"` on the separate [`review/gate`](review/gate/action.yml) job.
+The gate checks the commenter's effective repository permission. A
 refused comment never starts the review job, so it never loads the key and
 never cancels a review in progress through the job's concurrency group. The
 review Action repeats the check for workflows without the gate.

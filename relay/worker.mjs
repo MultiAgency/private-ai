@@ -1,12 +1,13 @@
 // The GitHub App's webhook relay, a Cloudflare Worker. It answers GitHub
 // within its 10 s, and hands each review to a Durable Object that drives it:
-// one HTTPS call to the Private Investigator project on OutLayer per alarm
-// (each run stops within 180 s), again while the output says there is more.
+// one asynchronous submission or status poll per alarm. A call id is saved
+// before polling; the next step starts only after the preceding call settles.
 // What crosses it: GitHub's event (read here, never stored or forwarded except
 // install ids/account login for internal stats), and OutLayer's outputs (a job
 // id, a flag, hashes).
 //
-// Secrets (wrangler secret put): WEBHOOK_SECRET, PAYMENT_KEY, STATS_SECRET.
+// Secrets: WEBHOOK_SECRET, PAYMENT_KEY, STATS_SECRET; optional RECOVERY_SECRET
+// authorizes POST /recover with x-recovery-key. Stats readers cannot recover jobs.
 // Vars: OUTLAYER_PROJECT, COMPUTE_LIMIT (micro-USD per call).
 //
 // GET /stats?key=$STATS_SECRET — HTML dashboard. GET /stats.json?key=… — JSON.
@@ -15,7 +16,8 @@ import { DurableObject } from "cloudflare:workers";
 import { driver, eventInput, installationEvent, reviewRequest, signedByGitHub } from "./relay.mjs";
 import { applyStat, emptyStats, renderStatsHtml, summarize } from "./stats.mjs";
 
-const OUTLAYER = "https://api.outlayer.ai/call";
+import { outlayer } from "./outlayer.mjs";
+import { recoverReview } from "./recovery.mjs";
 
 function statsStub(env) {
   return env.STATS.get(env.STATS.idFromName("stats"));
@@ -31,6 +33,8 @@ function authorizedStats(request, env) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    if (request.method === "POST" && url.pathname === "/recover") return recoverReview(request, env);
 
     if (request.method === "GET" && (url.pathname === "/stats" || url.pathname === "/stats.json")) {
       if (!authorizedStats(request, env)) return new Response("unauthorized", { status: 401 });
@@ -99,17 +103,7 @@ export class Reviews extends DurableObject {
     const stats = () => statsStub(env);
     this.driver = driver({
       storage: ctx.storage,
-      call: async input => {
-        const response = await fetch(`${OUTLAYER}/${env.OUTLAYER_PROJECT}`, {
-          method: "POST",
-          // A step can run 150 s and more; OutLayer's default ceiling is $0.01.
-          headers: { "x-payment-key": env.PAYMENT_KEY, "x-compute-limit": env.COMPUTE_LIMIT, "content-type": "application/json" },
-          // OutLayer's default for an HTTPS call is 60 s; a step is planned for 180.
-          body: JSON.stringify({ input, resource_limits: { max_execution_seconds: 180 } }),
-        });
-        if (!response.ok) throw new Error(`OutLayer ${response.status}`);
-        return (await response.json()).output;
-      },
+      execution: outlayer({ project: env.OUTLAYER_PROJECT, paymentKey: env.PAYMENT_KEY, computeLimit: env.COMPUTE_LIMIT }),
       log: line => console.log(line),
       note: event => stats().record(event),
     });
@@ -117,6 +111,10 @@ export class Reviews extends DurableObject {
 
   enqueue(input) {
     return this.driver.enqueue(input);
+  }
+
+  recover(callId) {
+    return this.driver.recover(callId);
   }
 
   alarm() {

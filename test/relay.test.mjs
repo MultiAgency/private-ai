@@ -6,8 +6,17 @@ import test from "node:test";
 
 import { readFileSync } from "node:fs";
 
-import { MAX_QUEUED, RETRIES, driver, eventInput, installationEvent, reviewRequest, signedByGitHub } from "../relay/relay.mjs";
+import { MAX_QUEUED, RETRIES, POLL_INTERVAL, PENDING_LIMIT, driver as createDriver, eventInput, installationEvent, reviewRequest, signedByGitHub } from "../relay/relay.mjs";
 import { applyStat, emptyStats, renderStatsHtml, summarize } from "../relay/stats.mjs";
+import { CallError, outlayer } from "../relay/outlayer.mjs";
+import { recoverReview } from "../relay/recovery.mjs";
+
+const CALL_ID = "11111111-2222-3333-4444-555555555555";
+// Existing job fixtures finish immediately; asynchronous fixtures below span alarms.
+const driver = ({ call, ...options }) => createDriver({ ...options, execution: {
+  start: async input => ({ call_id: CALL_ID, status: "completed", output: await call(input) }),
+  poll: async () => { throw new Error("unexpected poll"); },
+} });
 
 const secret = "webhook-secret";
 const sign = body => `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
@@ -86,16 +95,18 @@ test("a request that arrives during a call is kept, behind the job's next step",
   assert.deepEqual(store.queue().map(i => i.input), [{ step: "j" }, { event: 2 }]);
 });
 
-test("a failed or empty call is retried with backoff, then given up", async () => {
+test("a confirmed failed call is retried with backoff, then given up", async () => {
   const store = storage();
   const logs = [];
-  const d = driver({ storage: store, call: async () => undefined, log: line => logs.push(line), now: () => 1_000 });
+  const d = createDriver({ storage: store, execution: {
+    start: async () => ({ call_id: CALL_ID, status: "failed" }),
+  }, log: line => logs.push(line), now: () => 1_000 });
   await d.enqueue({ event: 1 });
   await d.enqueue({ event: 2 });
   store.fired();
   for (let tries = 1; tries < RETRIES; tries++) {
     await d.alarm();
-    assert.equal(store.queue()[0].tries, tries, "a run that returned no output is retried");
+    assert.equal(store.queue()[0].tries, tries, "a confirmed failed run is retried");
     assert.equal(store.fired(), 1_000 + 30_000 * tries);
   }
   await d.alarm();
@@ -183,4 +194,324 @@ test("the driver notes job outcomes and OutLayer give-ups", async () => {
   store.fired();
   await d.alarm();
   assert.deepEqual(notes, [{ type: "job_failed", job: "j", failed: "run_cutoff" }]);
+});
+
+test("malformed completed output retains the call and queue, then recovers by polling", async () => {
+  for (const polling of [false, true]) for (const output of [null, [], "bad", {}, { more: true }, { job: "j" },
+    { job: "", more: false }, { job: "j", more: "false" },
+    { job: "j", more: true, failed: "error" }, { job: "j", more: false, skipped: "true" }]) {
+    const store = storage();
+    let submissions = 0;
+    let corrected = false;
+    const execution = outlayer({ project: "fixture", fetch: async (_url, init) => {
+      if (init.method === "POST") submissions++;
+      if (polling && init.method === "POST") return Response.json({ call_id: CALL_ID, status: "pending" });
+      return Response.json({ call_id: CALL_ID, status: "completed",
+        output: corrected ? { job: "j", more: false } : output });
+    } });
+    const d = () => createDriver({ storage: store, execution });
+    await d().enqueue({ step: "j" });
+    await d().enqueue({ event: 2 });
+    store.fired();
+    await d().alarm();
+    if (polling) { store.fired(); await d().alarm(); }
+    assert.equal(store.queue()[0]?.paused, true, JSON.stringify(output));
+    assert.equal(store.queue()[0].callId, CALL_ID);
+    assert.equal(store.queue().length, 2);
+    store.fired(); await d().alarm();
+    assert.equal(submissions, 1);
+    corrected = true;
+    assert.equal((await d().recover()).recovered, true);
+    store.fired(); await d().alarm();
+    assert.equal(submissions, 1, "recovery must poll the saved execution");
+    assert.deepEqual(store.queue().map(item => item.input), [{ event: 2 }]);
+  }
+});
+
+test("valid terminal enclave outputs complete without replay, including refusals and skips", async () => {
+  for (const output of [
+    { job: "j", more: false },
+    { job: "j", more: false, skipped: true, duplicate: true },
+    { job: "j", more: false, failed: "run_cutoff" },
+    { more: false, failed: "bad event" },
+  ]) {
+    const store = storage();
+    const notes = [];
+    const d = driver({ storage: store, call: async () => output, note: async e => notes.push(e) });
+    await d.enqueue({ event: 1 });
+    store.fired(); await d.alarm();
+    assert.deepEqual(store.queue(), []);
+    assert.equal(notes[0].type, output.failed ? "job_failed" : "job_done");
+  }
+});
+
+test("a pending call is submitted once and polled across driver restarts", async () => {
+  const store = storage();
+  let submissions = 0;
+  let polls = 0;
+  const execution = {
+    start: async () => { submissions++; return { call_id: CALL_ID, status: "pending" }; },
+    poll: async id => {
+      assert.equal(id, CALL_ID);
+      return ++polls < 2 ? { status: "pending" } : { status: "completed", output: { job: "j", more: false } };
+    },
+  };
+  const d = () => createDriver({ storage: store, execution, now: () => 1000 });
+  await d().enqueue({ event: 1 });
+  store.fired();
+  await d().alarm();
+  assert.equal(store.queue()[0].callId, CALL_ID);
+  assert.equal(store.fired(), 1000 + POLL_INTERVAL);
+  await d().alarm();
+  store.fired();
+  await d().alarm();
+  assert.equal(submissions, 1);
+  assert.equal(polls, 2);
+  assert.deepEqual(store.queue(), []);
+});
+
+test("polling errors keep the same call and pause instead of submitting twice", async () => {
+  const store = storage();
+  let submissions = 0;
+  const notes = [];
+  const d = createDriver({ storage: store, note: async e => notes.push(e), execution: {
+    start: async () => { submissions++; return { call_id: CALL_ID, status: "pending" }; },
+    poll: async () => { throw new CallError("OutLayer HTTP 524"); },
+  } });
+  await d.enqueue({ event: 1 });
+  store.fired();
+  await d.alarm();
+  for (let i = 0; i < RETRIES; i++) { store.fired(); await d.alarm(); }
+  assert.equal(submissions, 1);
+  assert.equal(store.queue()[0].callId, CALL_ID);
+  assert.equal(store.queue()[0].paused, true);
+  assert.equal(notes[0].call_id, CALL_ID);
+  await d.enqueue({ event: 2 });
+  assert.equal(store.queue()[0].paused, false, "a fresh command resumes status polling");
+  store.fired();
+  await d.alarm();
+  assert.equal(submissions, 1);
+});
+
+test("an ambiguous POST or interrupted submission is never retried", async () => {
+  for (const interrupted of [false, true]) {
+    const store = storage();
+    let submissions = 0;
+    const d = createDriver({ storage: store, execution: {
+      start: async () => { submissions++; throw new CallError("OutLayer HTTP 524"); },
+    } });
+    await d.enqueue({ event: 1 });
+    if (interrupted) await store.put("queue", [{ input: { event: 1 }, tries: 0, protocol: 1, submitting: true }]);
+    store.fired();
+    await d.alarm();
+    assert.equal(store.queue()[0].paused, true);
+    await d.enqueue({ event: 2 });
+    await d.alarm();
+    assert.equal(submissions, interrupted ? 0 : 1);
+  }
+});
+
+test("a stalled pending execution is retained and reported, without retrying it", async () => {
+  const store = storage();
+  let time = 0;
+  const notes = [];
+  const d = createDriver({ storage: store, now: () => time, note: async e => notes.push(e), execution: {
+    start: async () => ({ call_id: CALL_ID, status: "pending" }),
+    poll: async () => ({ status: "pending" }),
+  } });
+  await d.enqueue({ event: 1 });
+  store.fired(); await d.alarm();
+  time = PENDING_LIMIT;
+  store.fired(); await d.alarm();
+  assert.equal(store.queue()[0].paused, true);
+  assert.equal(store.queue()[0].callId, CALL_ID);
+  assert.equal(await store.getAlarm(), null);
+  assert.match(notes[0].error, /pending after 15 minutes/);
+});
+
+test("only known pre-queue refusals can resubmit, respecting Retry-After", async () => {
+  const store = storage();
+  let submissions = 0;
+  const d = createDriver({ storage: store, now: () => 0, execution: {
+    start: async () => {
+      if (++submissions === 1) throw new CallError("OutLayer HTTP 503", { refused: true, retryable: true, delay: 60_000 });
+      return { call_id: CALL_ID, status: "completed", output: { job: "j", more: false } };
+    },
+  } });
+  await d.enqueue({ event: 1 });
+  store.fired(); await d.alarm();
+  assert.equal(store.queue()[0].submitting, undefined);
+  assert.equal(store.fired(), 60_000);
+  await d.alarm();
+  assert.equal(submissions, 2);
+  assert.deepEqual(store.queue(), []);
+});
+
+test("a request arriving while a call is polled stays behind its next step", async () => {
+  const store = storage();
+  let d;
+  d = createDriver({ storage: store, execution: {
+    start: async () => ({ call_id: CALL_ID, status: "pending" }),
+    poll: async () => {
+      await d.enqueue({ event: 2 });
+      return { status: "completed", output: { job: "j", more: true } };
+    },
+  } });
+  await d.enqueue({ event: 1 });
+  store.fired(); await d.alarm();
+  store.fired(); await d.alarm();
+  assert.deepEqual(store.queue().map(i => i.input), [{ step: "j" }, { event: 2 }]);
+});
+
+test("the HTTP transport submits asynchronously and polls only the saved API call id", async () => {
+  const requests = [];
+  const api = outlayer({ project: "hack.near/private-investigator", paymentKey: "secret", computeLimit: "50000", fetch: async (url, init) => {
+    requests.push({ url, init });
+    return Response.json({ call_id: CALL_ID, status: requests.length === 1 ? "pending" : "completed", output: {} });
+  } });
+  await api.start({ event: 1 });
+  await api.poll(CALL_ID);
+  assert.deepEqual(JSON.parse(requests[0].init.body), { input: { event: 1 }, async: true, resource_limits: { max_execution_seconds: 180 } });
+  assert.equal(requests[0].init.headers["x-compute-limit"], "50000");
+  assert.equal(requests[1].url, `https://api.outlayer.ai/calls/${CALL_ID}`);
+  assert.equal(requests[1].init.method, "GET");
+  assert.equal(requests[1].init.body, undefined);
+  await assert.rejects(api.poll("https://attacker.invalid/"), /call id is invalid/);
+});
+
+test("the transport classifies refusals and never exposes upstream body text", async () => {
+  for (const [status, reason, retryable, refused] of [
+    [503, "upstream_unavailable", true, true], [503, "keystore_error", true, true],
+    [503, "unknown", false, false], [524, undefined, false, false],
+    [500, "internal_error", false, false], [408, "timeout", false, false],
+    [429, "rate_limit_exceeded", true, true], [403, "project_not_allowed", false, true],
+  ]) {
+    const api = outlayer({ fetch: async () => Response.json({ reason, error: "private content and secret" }, { status, headers: { "retry-after": "45" } }) });
+    await assert.rejects(api.start({}), e => {
+      assert.equal(e.retryable, retryable);
+      assert.equal(e.refused, refused);
+      assert.equal(e.delay, 45_000);
+      assert.doesNotMatch(e.message, /private|secret/);
+      return true;
+    });
+  }
+  const api = outlayer({ fetch: async () => { throw new Error("payment key: secret"); } });
+  await assert.rejects(api.start({}), e => !e.refused && !/secret/.test(e.message));
+});
+
+test("malformed accepted results cannot trigger a second submission", async () => {
+  for (const result of [{ status: "pending" }, { call_id: "../bad", status: "pending" }, { call_id: CALL_ID, status: "unknown" }]) {
+    const api = outlayer({ fetch: async () => Response.json(result) });
+    await assert.rejects(api.start({}), e => !e.refused && !e.retryable);
+  }
+  const api = outlayer({ fetch: async () => Response.json({ call_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", status: "pending" }) });
+  await assert.rejects(api.poll(CALL_ID), /different call id/);
+});
+
+test("a deployment never replays a legacy synchronous queue with unknown acceptance", async () => {
+  const store = storage();
+  await store.put("queue", [{ input: { event: 1 }, tries: 1 }]);
+  let calls = 0;
+  const d = createDriver({ storage: store, execution: { start: async () => { calls++; } } });
+  await d.alarm();
+  assert.equal(calls, 0);
+  assert.equal(store.queue()[0].paused, true);
+});
+
+test("a confirmed failed execution is retried, but terminal admission refusals are not", async () => {
+  const store = storage();
+  let calls = 0;
+  const d = createDriver({ storage: store, execution: {
+    start: async () => {
+      calls++;
+      if (calls === 1) return { call_id: CALL_ID, status: "failed" };
+      throw new CallError("OutLayer HTTP 401", { refused: true });
+    },
+  } });
+  await d.enqueue({ event: 1 });
+  store.fired(); await d.alarm();
+  assert.equal(store.queue()[0].callId, undefined, "a settled failed call can start a recovery run");
+  store.fired(); await d.alarm();
+  assert.equal(calls, 2);
+  assert.deepEqual(store.queue(), []);
+});
+
+test("a full queue can resume a paused known call without another paid submission", async () => {
+  const store = storage();
+  await store.put("queue", Array.from({ length: MAX_QUEUED }, (_, i) => ({
+    input: { event: i }, tries: 0, protocol: 1,
+    ...(i === 0 && { paused: true, callId: CALL_ID }),
+  })));
+  const d = createDriver({ storage: store, execution: {} });
+  await d.enqueue({ event: "overflow" });
+  assert.equal(store.queue().length, MAX_QUEUED);
+  assert.equal(store.queue()[0].paused, false);
+  assert.notEqual(await store.getAlarm(), null);
+});
+
+test("operator recovery attaches a verified id to a legacy queue without repeating POST", async () => {
+  const store = storage();
+  await store.put("queue", [{ input: { event: 1 }, tries: 1, paused: true }]);
+  let polls = 0;
+  const d = createDriver({ storage: store, execution: {
+    start: async () => assert.fail("recovery must never submit"),
+    poll: async id => { assert.equal(id, CALL_ID); polls++; return { status: "completed", output: { job: "j", more: false } }; },
+  } });
+  assert.equal((await d.recover()).reason, "call_id_required");
+  assert.deepEqual(await d.recover(CALL_ID), { recovered: true, call_id: CALL_ID });
+  assert.equal(store.queue()[0].protocol, 1);
+  store.fired(); await d.alarm();
+  assert.equal(polls, 2);
+  assert.deepEqual(store.queue(), []);
+});
+
+test("recovery cannot replace a known call or overwrite concurrent queue progress", async () => {
+  const store = storage();
+  const head = { input: { event: 1 }, tries: 0, protocol: 1, paused: true, callId: CALL_ID };
+  await store.put("queue", [head]);
+  const d = createDriver({ storage: store, execution: { poll: async () => {
+    await store.put("queue", [{ input: { event: 2 }, tries: 0, protocol: 1 }]);
+    return { status: "pending" };
+  } } });
+  assert.equal((await d.recover("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")).reason, "call_id_conflict");
+  assert.equal((await d.recover()).reason, "queue_changed");
+  assert.deepEqual(store.queue()[0].input, { event: 2 });
+});
+
+test("operator recovery requires its own header credential and validates ids before RPC", async () => {
+  const secret = "recovery-secret";
+  const body = { installation: 11, repo_id: 22, pr: 7, call_id: CALL_ID };
+  let calls = 0;
+  const env = { RECOVERY_SECRET: secret, STATS_SECRET: "stats-secret", REVIEWS: {
+    idFromName: name => { assert.equal(name, "11/22/7"); return name; },
+    get: () => ({ recover: async id => { calls++; assert.equal(id, CALL_ID); return { recovered: true, call_id: id }; } }),
+  } };
+  const req = (input = body, headers = {}) => new Request("https://relay.invalid/recover", {
+    method: "POST", headers, body: JSON.stringify(input),
+  });
+  assert.equal((await recoverReview(req(), env)).status, 401);
+  assert.equal((await recoverReview(req(body, { "x-stats-key": "stats-secret" }), env)).status, 401);
+  assert.equal((await recoverReview(req(body, { "x-recovery-key": secret }), { ...env, RECOVERY_SECRET: undefined })).status, 401);
+  for (const input of [null, { ...body, pr: -1 }, { ...body, installation: "11" }, { ...body, repo_id: Number.MAX_SAFE_INTEGER + 1 }, { ...body, call_id: "https://attacker.invalid/" }]) {
+    assert.equal((await recoverReview(req(input, { "x-recovery-key": secret }), env)).status, 400);
+  }
+  assert.equal(calls, 0);
+  assert.equal((await recoverReview(req(body, { "x-recovery-key": secret }), env)).status, 200);
+  assert.equal(calls, 1);
+});
+
+test("recovery returns conflicts and sanitized upstream failures", async () => {
+  const request = () => new Request("https://relay.invalid/recover", {
+    method: "POST", headers: { "x-recovery-key": "secret" },
+    body: JSON.stringify({ installation: 11, repo_id: 22, pr: 7 }),
+  });
+  for (const fails of [false, true]) {
+    const env = { RECOVERY_SECRET: "secret", REVIEWS: { idFromName: () => "id", get: () => ({ recover: async () => {
+      if (fails) throw new Error("private content and credentials");
+      return { recovered: false, reason: "call_id_required" };
+    } }) } };
+    const response = await recoverReview(request(), env);
+    assert.equal(response.status, fails ? 503 : 409);
+    assert.doesNotMatch(await response.text(), /private|credentials/);
+  }
 });
