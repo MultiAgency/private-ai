@@ -53,7 +53,10 @@ export function github(token, repo) {
       }
     },
 
-    compare: (base, head) => send("GET", `/compare/${base}...${head}`).then(r => r.json()),
+    commit: ref => send("GET", `/commits/${encodeURIComponent(ref)}`).then(r => r.json()),
+    check: body => send("POST", "/check-runs", { body }),
+
+    compare: (base, head) => send("GET", `/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`).then(r => r.json()),
 
     tarball: ref => send("GET", `/tarball/${ref}`).then(async r => Buffer.from(await r.arrayBuffer())),
 

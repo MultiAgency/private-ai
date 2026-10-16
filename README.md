@@ -53,6 +53,60 @@ same review the App and the Action run:
 New cases and models are measured before any claim here changes. React 👍 or
 👎 on a finding: that is how it is measured on real code.
 
+## Review a commit or range without a PR
+
+The CLI and GitHub Action also accept explicit commit reviews. The hosted App
+still uses `/review` on PRs; it does not review standalone commits yet.
+
+```sh
+node review/review.mjs --repo owner/repo --commit COMMIT_SHA
+node review/review.mjs --repo owner/repo --base BASE_REF --head HEAD_REF
+```
+
+Use `GITHUB_TOKEN` and `NEARAI_API_KEY` as for PR reviews. Posting needs
+`contents: read` and `checks: write` with an installation token (including the
+workflow's `github.token`). Findings and the receipt hash appear in an
+informational Private Investigator check on the resolved head SHA. The receipt
+records the repository and exact base/head SHAs. `--dry-run` saves output without
+posting; `--receipt` selects its path.
+
+A single commit is compared to its first parent, including merge commits.
+Ranges require the base to be an ancestor of the head; resolve a merge base
+explicitly for diverged branches. Root commits and comparisons reaching GitHub's
+300-file limit are refused. Rubric files come from the resolved base revision.
+
+For a manual Action workflow, use explicit inputs (replace the pin with the
+feature's released commit SHA):
+
+```yaml
+name: Review commit range
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Ancestor revision
+        required: true
+      head:
+        description: Head revision
+        required: true
+permissions:
+  contents: read
+  checks: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: MultiAgency/private-ai/review@<commit sha>
+        with:
+          nearai-api-key: ${{ secrets.NEARAI_API_KEY }}
+          base: ${{ inputs.base }}
+          head: ${{ inputs.head }}
+```
+
+Alternatively pass `commit:` alone. Do not combine these inputs with `pr:`.
+Automatic push reviews are not enabled by this example. Existing PR re-reviews
+continue to check earlier findings and report those still open.
+
 ## Two ways to run it
 
 ### The GitHub App (zero setup)

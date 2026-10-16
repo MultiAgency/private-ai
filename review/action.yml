@@ -12,6 +12,12 @@ inputs:
   pr:
     description: Pull request number.
     default: ${{ github.event.pull_request.number || github.event.issue.number }}
+  commit:
+    description: Commit to review against its first parent; mutually exclusive with pr and base/head.
+  base:
+    description: Ancestor revision for a commit range; requires head.
+  head:
+    description: Head revision for a commit range; requires base.
   rubric:
     description: Comma-separated review instruction files, read from the base commit. Missing files are skipped.
     default: REVIEW.md,AGENTS.md
@@ -47,6 +53,9 @@ runs:
         NEARAI_API_KEY: ${{ inputs.nearai-api-key }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ inputs.pr }}
+        REVIEW_COMMIT: ${{ inputs.commit }}
+        REVIEW_BASE: ${{ inputs.base }}
+        REVIEW_HEAD: ${{ inputs.head }}
         RUBRIC: ${{ inputs.rubric }}
         MODEL: ${{ inputs.model }}
         ALLOW_UNPATCHED_MODEL: ${{ inputs.allow-unpatched-model }}
