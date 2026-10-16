@@ -20,7 +20,7 @@ use crate::attest::{Attestation, Summary};
 use crate::receipt::{proven_claims, receipt_v2, subject_commitment, turn_hash, Evidence};
 use crate::failure::{Failure, Mark};
 use crate::repo::Repo;
-use crate::review::{check_submission, commentable_lines, is_our_review, merge_findings, own_findings, render_review, spec, system_prompt, user_prompt};
+use crate::review::{verified_earlier, check_consolidation, consolidation_prompt, consolidation_system_prompt, finalize_review, check_submission, commentable_lines, is_our_review, merge_findings, own_findings, render_review, spec, system_prompt, user_prompt};
 use crate::store::{put, remove, take, Store};
 
 /// The largest reply a hosted turn may take: about 150 s at measured speeds,
@@ -327,6 +327,13 @@ struct Job {
 /// What the first step sets up: the passes, and the attestation they rely on.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Passes {
+    #[serde(default)]
+    rubric: String,
+    #[serde(default)]
+    earlier: Vec<Value>,
+    /// When set, the final agent partitions these candidates by root cause.
+    #[serde(default)]
+    candidates: Option<Vec<Value>>,
     commentable: Vec<String>,
     agents: Vec<Value>,
     results: Vec<Option<Value>>,
@@ -472,7 +479,20 @@ pub fn step(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &dyn R
         None => return gather(store, forge, model, run, job, state),
         Some(passes) => passes,
     };
-    let (passes, taken) = if passes.next().is_some() { take_turns(store, forge, model, run, job, &mut state, passes)? } else { (passes, vec![]) };
+    let (mut passes, taken) = if passes.next().is_some() { take_turns(store, forge, model, run, job, &mut state, passes)? } else { (passes, vec![]) };
+    if passes.next().is_none() && passes.candidates.is_none() {
+        let lists: Vec<Value> = passes.results.iter().flatten().map(|r| verified_earlier(&r["findings"], &passes.earlier)).collect();
+        let candidates = merge_findings(&lists);
+        if candidates.len() > 1 {
+            // A separate signed agent sees all passes, so paraphrased duplicates
+            // on different lines are grouped before the review-wide nit budget.
+            let rubric = if passes.rubric.is_empty() { spec()["default_rubric"].as_str().unwrap_or("") } else { &passes.rubric };
+            let agent = Agent::new(&consolidation_system_prompt(rubric), &consolidation_prompt(&candidates), state.max_turns).with_reply_cap(HOSTED_REPLY_CAP);
+            passes.agents.push(agent.to_json());
+            passes.results.push(None);
+            passes.candidates = Some(candidates);
+        }
+    }
     if passes.next().is_some() {
         let mut step = Step::plain(Outcome::More);
         step.attests.insert("turns".into(), Value::Array(taken));
@@ -507,6 +527,9 @@ fn gather(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &dyn Run
     let mut step = Step::plain(Outcome::More);
     step.attests.insert("nonce".into(), json!(evidence.nonce));
     state.review = Some(Passes {
+        rubric,
+        earlier,
+        candidates: None,
         commentable: commentable_lines(&files),
         results: vec![None; agents.len()],
         agents,
@@ -528,8 +551,12 @@ fn take_turns(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &dyn
     let tarball = forge.tarball(state.pr["head"]["sha"].as_str().unwrap_or(""))?;
     let tree = Repo::from_tarball(&tarball, budget)?;
     drop(tarball);
-    let submit = spec()["submit_tool"].clone();
-    let check = |args: &Value| check_submission(args);
+    let submit = spec()[if passes.candidates.is_some() { "consolidation_tool" } else { "submit_tool" }].clone();
+    let candidates = passes.candidates.clone();
+    let check = |args: &Value| match &candidates {
+        Some(candidates) => check_consolidation(args, candidates),
+        None => check_submission(args),
+    };
     let finish = Finish { tool: &submit, check: &check };
     let mut taken = Vec::new();
     let mut first = true;
@@ -556,8 +583,15 @@ fn take_turns(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &dyn
 /// The last step: the receipt, then the review.
 fn finish(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, state: Job, passes: Passes) -> Result<Step> {
     let results: Vec<Value> = passes.results.into_iter().flatten().collect();
-    let findings: Vec<Value> = results.iter().map(|r| r["findings"].clone()).collect();
-    let review = json!({ "summary": results.first().map(|r| r["summary"].clone()).unwrap_or(Value::Null), "findings": merge_findings(&findings) });
+    let review = match &passes.candidates {
+        Some(candidates) => finalize_review(candidates, results.last().expect("completed consolidation"))?,
+        None => {
+            let lists: Vec<Value> = results.iter().map(|r| verified_earlier(&r["findings"], &passes.earlier)).collect();
+            let candidates = merge_findings(&lists);
+            let groups: Vec<Value> = (0..candidates.len()).map(|i| json!([i])).collect();
+            finalize_review(&candidates, &json!({ "summary": results.first().map(|r| r["summary"].clone()).unwrap_or(Value::Null), "groups": groups }))?
+        }
+    };
     // New findings only: earlier ones still open are counted in the review, not here.
     let tally = review["findings"].as_array().map_or(0, |f| f.iter().filter(|f| f["earlier"] != true).count());
     // Passes run one after another, so pass order is the order the runs took the turns in.

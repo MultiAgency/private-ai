@@ -389,10 +389,109 @@ fn the_receipts_the_job_writes_are_the_ones_the_checker_is_tested_on() {
 
 #[test]
 fn the_check_says_nothing_to_report_only_when_nothing_is_open() {
-    let (store, hub, young) = (Memory::default(), Hub::default(), at(0));
+    let hub = Hub { earlier: (vec![json!({"id":1,"user":{"login":"private-investigator[bot]"},"body":"**Private Investigator**"})], vec![json!({"pull_request_review_id":1,"path":"lib/pay.mjs","body":"**Bugs, Important:** Zero totals are sent."})]), ..Hub::default() };
+    let (store, young) = (Memory::default(), at(0));
     let model = Scripted { earlier: true, ..model() };
     start(&store, &hub, &young, "j14", 1, "o/r", 7, &settings(1)).unwrap();
     run_step(&store, &hub, &model, &young, "j14");
     assert_eq!(run_step(&store, &hub, &model, &young, "j14").outcome, Outcome::Done);
     assert_eq!(hub.checks.borrow().last().unwrap()["body"]["output"]["title"], "Case closed: no new leads, 1 still open");
+}
+
+/// A model that submits the PR21 quality cases, then first gives an invalid
+/// partition so consolidation must repair its answer across saved runs.
+struct QualityModel {
+    candidates: Vec<Value>,
+    decision: Value,
+    split: usize,
+    raw: Cell<usize>,
+    turns: Cell<usize>,
+}
+impl Model for QualityModel {
+    fn attest(&self, name: &str, allow: bool) -> Result<(Evidence, Attestation)> {
+        model().attest(name, allow)
+    }
+    fn turn(&self, agent: &mut Agent, _: &str, _: &str, _: &[Value], finish: &Finish, call: &mut dyn FnMut(&str, &Value) -> String) -> Result<Next> {
+        let submission = if finish.name() == "submit_review" {
+            let start = self.raw.get() * self.split;
+            self.raw.set(self.raw.get() + 1);
+            let end = if start == 0 { self.split.min(self.candidates.len()) } else { self.candidates.len() };
+            json!({ "summary": "Checked candidate issues.", "findings": self.candidates[start..end] })
+        } else if agent.turn == 0 {
+            json!({ "summary": "Incomplete partition", "groups": [[0]] })
+        } else {
+            assert!(agent.messages.iter().any(|m| m["role"] == "tool" && m["content"].as_str().unwrap_or("").contains("each candidate id must appear exactly once")));
+            self.decision.clone()
+        };
+        self.turns.set(self.turns.get() + 1);
+        let reply = json!({ "tool_calls": [{ "id": "quality", "type": "function", "function": { "name": finish.name(), "arguments": submission.to_string() } }] });
+        let record = json!({ "id": format!("quality-{}", self.turns.get()), "request_sha256": "", "response_sha256": "", "signature": {} });
+        agent.apply(&reply, Some("tool_calls"), record, finish, call)
+    }
+}
+
+#[test]
+fn consolidation_repairs_resumes_and_attests_every_turn_before_posting() {
+    let text = std::fs::read_to_string(format!("{}/../test/fixtures/review-quality.json", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let fixture: Value = serde_json::from_str(&text).unwrap();
+    for (i, case) in fixture["cases"].as_array().unwrap().iter().enumerate() {
+        let comments: Vec<Value> = case["candidates"].as_array().unwrap().iter().filter(|f| f["earlier"] == true).map(|f| json!({ "pull_request_review_id": 1, "path": f["path"], "body": format!("**Bugs, Nit:** {}", f["body"].as_str().unwrap()) })).collect();
+        let hub = Hub { earlier: (vec![json!({"id":1,"user":{"login":"private-investigator[bot]"},"body":"**Private Investigator**"})], comments), ..Hub::default() };
+        let (store, old) = (Memory::default(), at(200));
+        let quality = QualityModel { candidates: case["candidates"].as_array().unwrap().clone(), decision: case["decision"].clone(), split: 5, raw: Cell::new(0), turns: Cell::new(0) };
+        // The budget case has eight nits: split five into the first pass and
+        // the remaining three into the second, then cap only the final review.
+        let passes = if i == 0 { 1 } else { 2 };
+        let id = format!("quality-{i}");
+        let started = start(&store, &hub, &old, &id, 1, "owner/repo", 7, &settings(passes)).unwrap();
+        let mut outputs = vec![started.1.to_json(&id)];
+        let mut steps = 0;
+        loop {
+            steps += 1;
+            assert!(steps < 12, "consolidation must not loop forever");
+            let step = run_step(&store, &hub, &quality, &old, &id);
+            outputs.push(step.to_json(&id));
+            let outcome = step.outcome;
+            if outcome == Outcome::Done { break; }
+            assert_eq!(outcome, Outcome::More);
+            assert!(hub.reviews.borrow().is_empty(), "no unconsolidated review may publish");
+        }
+        let posted = hub.reviews.borrow();
+        assert_eq!(posted.len(), 1);
+        let body = posted[0]["body"].as_str().unwrap();
+        let expected = case["expected"]["findings"].as_array().unwrap();
+        for f in expected.iter().filter(|f| f["earlier"] != true) {
+            assert!(body.contains(f["body"].as_str().unwrap()), "expected finding missing: {f}");
+        }
+        if i == 0 {
+            assert!(!body.contains("workflow_dispatch has no PR number"));
+            assert!(!body.contains("Two manual invocations"));
+            assert!(body.contains("1 still open"));
+        } else {
+            assert!(body.contains("3 additional nits omitted (limit: 5)."));
+            for n in 5..8 { assert!(!body.contains(&format!("Minor issue {n}"))); }
+            assert!(body.contains("Important issue A") && body.contains("Important issue B"));
+        }
+        let (_, receipt) = published(&store);
+        assert_eq!(receipt["turns"].as_array().unwrap().len(), quality.turns.get());
+        assert_eq!(quality.turns.get(), passes as usize + 2, "both consolidation turns must enter the receipt");
+        let mut attested: Vec<String> = outputs.iter().flat_map(|o| o["turns"].as_array().into_iter().flatten()).map(|h| h.as_str().unwrap().to_string()).collect();
+        let mut listed: Vec<String> = receipt["turns"].as_array().unwrap().iter().map(private_investigator::receipt::turn_hash).collect();
+        attested.sort(); listed.sort();
+        assert_eq!(attested, listed, "each consolidation and review turn is attested exactly once");
+    }
+}
+
+
+#[test]
+fn failed_consolidation_never_publishes_unconsolidated_candidates() {
+    let (store, hub, old) = (Memory::default(), Hub::default(), at(200));
+    let f = |line| json!({ "path": "a", "line": line, "pass": "Bugs", "severity": "Nit", "body": format!("Issue {line}") });
+    let quality = QualityModel { candidates: vec![f(1), f(2)], decision: json!({ "summary": "Checked", "groups": [[0,1]] }), split: 2, raw: Cell::new(0), turns: Cell::new(0) };
+    let settings = Settings { max_turns: 1, ..settings(1) };
+    start(&store, &hub, &old, "bad-consolidation", 1, "o/r", 7, &settings).unwrap();
+    assert_eq!(run_step(&store, &hub, &quality, &old, "bad-consolidation").outcome, Outcome::More);
+    assert_eq!(run_step(&store, &hub, &quality, &old, "bad-consolidation").outcome, Outcome::More);
+    assert_eq!(run_step(&store, &hub, &quality, &old, "bad-consolidation").outcome, Outcome::Failed(Failure::NoSubmission));
+    assert!(hub.reviews.borrow().is_empty());
 }

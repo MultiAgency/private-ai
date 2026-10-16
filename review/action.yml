@@ -34,6 +34,7 @@ inputs:
       How many independent reviews to run in parallel, merged one finding per line.
       Measured in eval/, 3 turned a finding caught by luck into one caught every
       run, in the same time, at about three times the NEAR AI cost (cents).
+      Multiple unique candidates also receive a signed consolidation pass.
     default: "3"
   allow-unpatched-model:
     description: >-

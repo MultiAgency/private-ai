@@ -1,0 +1,271 @@
+{
+  "$comment": "Regression cases inspired by PR21: three paraphrases at different lines, independent issues on one line, and a review-wide five-new-nit budget. JS and Rust must agree.",
+  "cases": [
+    {
+      "candidates": [
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 32,
+          "pass": "Bugs",
+          "severity": "Nit",
+          "body": "Manual setup dispatches share a concurrency group and cancel each other."
+        },
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 37,
+          "pass": "Bugs",
+          "severity": "Nit",
+          "body": "workflow_dispatch has no PR number, so cancel-in-progress cancels another setup run."
+        },
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 36,
+          "pass": "Bugs",
+          "severity": "Nit",
+          "body": "Two manual invocations use private-review- and interrupt one another."
+        },
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 36,
+          "pass": "Security",
+          "severity": "Important",
+          "body": "An unrelated permission boundary is missing."
+        },
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 32,
+          "pass": "Bugs",
+          "severity": "Nit",
+          "body": "Earlier unresolved issue.",
+          "earlier": true
+        }
+      ],
+      "decision": {
+        "summary": "Checked manual dispatch and permissions.",
+        "groups": [
+          [
+            0,
+            1,
+            2
+          ],
+          [
+            3
+          ],
+          [
+            4
+          ]
+        ]
+      },
+      "expected": {
+        "summary": "Checked manual dispatch and permissions.",
+        "findings": [
+          {
+            "path": ".github/workflows/private-review.yml",
+            "line": 32,
+            "pass": "Bugs",
+            "severity": "Nit",
+            "body": "Manual setup dispatches share a concurrency group and cancel each other."
+          },
+          {
+            "path": ".github/workflows/private-review.yml",
+            "line": 36,
+            "pass": "Security",
+            "severity": "Important",
+            "body": "An unrelated permission boundary is missing."
+          },
+          {
+            "path": ".github/workflows/private-review.yml",
+            "line": 32,
+            "pass": "Bugs",
+            "severity": "Nit",
+            "body": "Earlier unresolved issue.",
+            "earlier": true
+          }
+        ]
+      }
+    },
+    {
+      "candidates": [
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 1,
+          "pass": "Bugs",
+          "severity": "Nit",
+          "body": "Minor issue 0"
+        },
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 2,
+          "pass": "Bugs",
+          "severity": "Nit",
+          "body": "Minor issue 1"
+        },
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 3,
+          "pass": "Bugs",
+          "severity": "Nit",
+          "body": "Minor issue 2"
+        },
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 4,
+          "pass": "Bugs",
+          "severity": "Nit",
+          "body": "Minor issue 3"
+        },
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 5,
+          "pass": "Bugs",
+          "severity": "Nit",
+          "body": "Minor issue 4"
+        },
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 6,
+          "pass": "Bugs",
+          "severity": "Nit",
+          "body": "Minor issue 5"
+        },
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 7,
+          "pass": "Bugs",
+          "severity": "Nit",
+          "body": "Minor issue 6"
+        },
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 8,
+          "pass": "Bugs",
+          "severity": "Nit",
+          "body": "Minor issue 7"
+        },
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 1,
+          "pass": "Bugs",
+          "severity": "Important",
+          "body": "Important issue A"
+        },
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 2,
+          "pass": "Security",
+          "severity": "Important",
+          "body": "Important issue B"
+        },
+        {
+          "path": ".github/workflows/private-review.yml",
+          "line": 50,
+          "pass": "Bugs",
+          "severity": "Nit",
+          "body": "Earlier Nit",
+          "earlier": true
+        }
+      ],
+      "decision": {
+        "summary": "Checked the change.",
+        "groups": [
+          [
+            0
+          ],
+          [
+            1
+          ],
+          [
+            2
+          ],
+          [
+            3
+          ],
+          [
+            4
+          ],
+          [
+            5
+          ],
+          [
+            6
+          ],
+          [
+            7
+          ],
+          [
+            8
+          ],
+          [
+            9
+          ],
+          [
+            10
+          ]
+        ]
+      },
+      "expected": {
+        "summary": "Checked the change.",
+        "findings": [
+          {
+            "path": ".github/workflows/private-review.yml",
+            "line": 1,
+            "pass": "Bugs",
+            "severity": "Nit",
+            "body": "Minor issue 0"
+          },
+          {
+            "path": ".github/workflows/private-review.yml",
+            "line": 2,
+            "pass": "Bugs",
+            "severity": "Nit",
+            "body": "Minor issue 1"
+          },
+          {
+            "path": ".github/workflows/private-review.yml",
+            "line": 3,
+            "pass": "Bugs",
+            "severity": "Nit",
+            "body": "Minor issue 2"
+          },
+          {
+            "path": ".github/workflows/private-review.yml",
+            "line": 4,
+            "pass": "Bugs",
+            "severity": "Nit",
+            "body": "Minor issue 3"
+          },
+          {
+            "path": ".github/workflows/private-review.yml",
+            "line": 5,
+            "pass": "Bugs",
+            "severity": "Nit",
+            "body": "Minor issue 4"
+          },
+          {
+            "path": ".github/workflows/private-review.yml",
+            "line": 1,
+            "pass": "Bugs",
+            "severity": "Important",
+            "body": "Important issue A"
+          },
+          {
+            "path": ".github/workflows/private-review.yml",
+            "line": 2,
+            "pass": "Security",
+            "severity": "Important",
+            "body": "Important issue B"
+          },
+          {
+            "path": ".github/workflows/private-review.yml",
+            "line": 50,
+            "pass": "Bugs",
+            "severity": "Nit",
+            "body": "Earlier Nit",
+            "earlier": true
+          }
+        ],
+        "omitted_nits": 3
+      }
+    }
+  ]
+}

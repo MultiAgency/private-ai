@@ -40,13 +40,23 @@ import spec from "./review.json" with { type: "json" };
 const SUBMIT = { tool: spec.submit_tool, check: checkSubmission };
 
 /** Why a submission is incomplete, for the model to fix; nothing when it is complete. */
-export function checkSubmission({ summary, findings }) {
+export function checkSubmission(submission) {
+  const { summary, findings } = submission ?? {};
   if (typeof summary !== "string" || !Array.isArray(findings)) return "submit_review needs a summary and a findings array";
   const bad = findings.findIndex(f =>
     typeof f?.path !== "string" || !Number.isInteger(f.line) ||
     !["pass", "severity", "body"].every(key => typeof f[key] === "string" && f[key]));
   if (bad >= 0) {
     return `finding ${bad + 1} needs path (string), line (integer), pass, severity and body; it has ${Object.keys(findings[bad] ?? {}).join(", ") || "nothing"}`;
+  }
+  for (const [i, f] of findings.entries()) {
+    if (!spec.finding_policy.categories.includes(f.pass) || !spec.finding_policy.severities.includes(f.severity)) {
+      return `finding ${i + 1} must use category Bugs or Security and severity Important or Nit`;
+    }
+    if (f.earlier !== undefined && typeof f.earlier !== "boolean") return `finding ${i + 1} earlier must be a boolean`;
+  }
+  if (findings.filter(f => !f.earlier && f.severity === "Nit").length > spec.finding_policy.max_new_nits) {
+    return `submit at most ${spec.finding_policy.max_new_nits} new Nit findings`;
   }
 }
 
@@ -158,6 +168,7 @@ export function renderReview({ review, turns, attestation, model, receiptSha256,
   const body = [
     `**${NAME}** (${tally})`,
     review.summary,
+    review.omitted_nits && `${review.omitted_nits} additional nits omitted (limit: ${spec.finding_policy.max_new_nits}).`,
     stillOpen && `${stillOpen === 1 ? "1 earlier finding is" : `${stillOpen} earlier findings are`} still open, and not posted again.`,
     LIMITS,
     FEEDBACK,
@@ -181,8 +192,8 @@ export function renderReview({ review, turns, attestation, model, receiptSha256,
  * `passes` times in parallel. One pass catches a real finding some runs and not
  * others (eval/), so several passes' findings are merged, one per line.
  */
-export async function reviewChange({ client, model, publicKey, pr, files, rubric, root, maxTurns, earlier = [], passes = 1, log = () => {} }) {
-  const runs = await Promise.all(Array.from({ length: passes }, (_, i) => runAgent({
+export async function reviewChange({ client, model, publicKey, pr, files, rubric, root, maxTurns, earlier = [], passes = 1, log = () => {}, agent = runAgent }) {
+  const runs = await Promise.all(Array.from({ length: passes }, (_, i) => agent({
     client,
     model,
     publicKey,
@@ -194,16 +205,77 @@ export async function reviewChange({ client, model, publicKey, pr, files, rubric
     maxTurns,
     log: passes > 1 ? line => log(`pass ${i + 1}: ${line}`) : log,
   })));
-  return {
-    review: { summary: runs[0].result.summary, findings: mergeFindings(runs.map(run => run.result.findings)) },
-    turns: runs.flatMap(run => run.turns),
-  };
+  const candidates = mergeFindings(runs.map(run => verifiedEarlier(run.result.findings, earlier)));
+  let decision = { summary: runs[0].result.summary, groups: candidates.map((_, i) => [i]) };
+  if (candidates.length > 1) {
+    const consolidated = await agent({
+      client, model, publicKey, system: consolidationSystemPrompt(rubric),
+      prompt: consolidationPrompt(candidates), tools: definitions, call: tools(root),
+      finish: { tool: spec.consolidation_tool, check: result => checkConsolidation(result, candidates) },
+      maxTurns, log: line => log(`consolidation: ${line}`),
+    });
+    decision = consolidated.result;
+    runs.push(consolidated);
+  }
+  return { review: finalizeReview(candidates, decision), turns: runs.flatMap(run => run.turns) };
 }
 
-/** Findings from several passes, keeping the first one reported for each line. */
+const rank = f => (f.severity === "Important" ? 2 : 0) + (f.pass === "Security" ? 1 : 0);
+const normalizedBody = body => body.replace(/[ \t\r\n]+/g, " ").replace(/^ | $/g, "");
+
+// Only a matching comment from our verified review history establishes earlier status.
+export function verifiedEarlier(findings, earlier) {
+  const body = text => normalizedBody(text.replace(/^\*\*[^\n]*?:\*\*/, ""));
+  return findings.map(f => {
+    const result = { ...f };
+    if (earlier.some(old => old.path === f.path && body(old.body) === body(f.body))) result.earlier = true;
+    else delete result.earlier;
+    return result;
+  });
+}
+
+/** Remove exact repeats, not distinct defects merely sharing an anchor line. */
 export function mergeFindings(lists) {
+  const found = new Map();
+  for (const f of lists.flat()) {
+    const key = JSON.stringify([f.path, f.line, Boolean(f.earlier), normalizedBody(f.body)]);
+    if (!found.has(key) || rank(f) > rank(found.get(key))) found.set(key, f);
+  }
+  return [...found.values()];
+}
+
+export const consolidationSystemPrompt = rubric => spec.consolidation_system_prompt.replace("{rubric}", () => rubric);
+export const consolidationPrompt = candidates => JSON.stringify(candidates.map((f, id) => ({ ...f, id })));
+
+/** Complete partitions prevent the consolidator from quietly dropping a candidate. */
+export function checkConsolidation(result, candidates) {
+  if (typeof result?.summary !== "string" || !Array.isArray(result.groups)) return "submit_consolidation needs a summary and groups";
   const seen = new Set();
-  return lists.flat().filter(f => !seen.has(`${f.path}:${f.line}`) && seen.add(`${f.path}:${f.line}`));
+  for (const group of result.groups) {
+    if (!Array.isArray(group) || !group.length) return "each group must contain candidate ids";
+    let first;
+    for (const id of group) {
+      if (!Number.isInteger(id) || id < 0 || id >= candidates.length || seen.has(id)) return "each candidate id must appear exactly once";
+      seen.add(id);
+      const f = candidates[id];
+      if (first && (f.path !== first.path || Boolean(f.earlier) !== Boolean(first.earlier))) return "groups must stay within one file and not mix earlier and new findings";
+      first = f;
+    }
+  }
+  if (seen.size !== candidates.length) return "each candidate id must appear exactly once";
+}
+
+/** Keep the strongest representative, then enforce a review-wide nit budget. */
+export function finalizeReview(candidates, decision) {
+  const problem = checkConsolidation(decision, candidates);
+  if (problem) throw new Error(problem);
+  let nits = 0, omitted = 0;
+  const findings = decision.groups.map(group => group.map(id => candidates[id]).reduce((a, b) => rank(b) > rank(a) ? b : a)).filter(f => {
+    if (f.earlier || f.severity !== "Nit" || ++nits <= spec.finding_policy.max_new_nits) return true;
+    omitted++;
+    return false;
+  });
+  return { summary: decision.summary, findings, ...(omitted ? { omitted_nits: omitted } : {}) };
 }
 
 /** Resolve refs once; reject comparisons whose API diff would omit changes. */

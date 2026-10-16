@@ -142,11 +142,11 @@ test("every review asks for 👍 or 👎 on its findings", () => {
   assert.match(body, /React 👍 or 👎 on it: that is how this reviewer is measured and improved/);
 });
 
-test("passes' findings merge one per line, the first pass's wording kept", () => {
+test("distinct findings survive even when they share a line", () => {
   const a = { path: "x.js", line: 1, pass: "Bugs", severity: "Nit", body: "first" };
   const b = { path: "x.js", line: 1, pass: "Bugs", severity: "Important", body: "second" };
   const c = { path: "x.js", line: 2, pass: "Bugs", severity: "Important", body: "only in pass 2" };
-  assert.deepEqual(mergeFindings([[a], [b, c], []]), [a, c]);
+  assert.deepEqual(mergeFindings([[a], [b, c], []]), [a, b, c]);
 });
 
 test("a review on a model with a pending platform update says the policy allowed it", () => {

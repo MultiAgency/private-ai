@@ -133,15 +133,26 @@ pub fn check_submission(submission: &Value) -> Option<String> {
     let (Some(_), Some(findings)) = (submission["summary"].as_str(), submission["findings"].as_array()) else {
         return Some("submit_review needs a summary and a findings array".into());
     };
-    let bad = findings.iter().position(|f| {
+    if let Some(bad) = findings.iter().position(|f| {
         !f["path"].is_string() || !is_integer(&f["line"]) || !["pass", "severity", "body"].iter().all(|k| f[*k].as_str().is_some_and(|s| !s.is_empty()))
-    })?;
-    let keys = findings[bad].as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(", ")).filter(|k| !k.is_empty());
-    Some(format!(
-        "finding {} needs path (string), line (integer), pass, severity and body; it has {}",
-        bad + 1,
-        keys.as_deref().unwrap_or("nothing")
-    ))
+    }) {
+        let keys = findings[bad].as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(", ")).filter(|k| !k.is_empty());
+        return Some(format!("finding {} needs path (string), line (integer), pass, severity and body; it has {}", bad + 1, keys.as_deref().unwrap_or("nothing")));
+    }
+    for (i, f) in findings.iter().enumerate() {
+        let allowed = |key: &str, value: &Value| spec()["finding_policy"][key].as_array().is_some_and(|a| a.contains(value));
+        if !allowed("categories", &f["pass"]) || !allowed("severities", &f["severity"]) {
+            return Some(format!("finding {} must use category Bugs or Security and severity Important or Nit", i + 1));
+        }
+        if f.get("earlier").is_some_and(|v| !v.is_boolean()) {
+            return Some(format!("finding {} earlier must be a boolean", i + 1));
+        }
+    }
+    let max = spec()["finding_policy"]["max_new_nits"].as_u64().expect("nit limit");
+    if findings.iter().filter(|f| f["earlier"] != true && f["severity"] == "Nit").count() as u64 > max {
+        return Some(format!("submit at most {max} new Nit findings"));
+    }
+    None
 }
 
 /// JavaScript truthiness of a JSON value.
@@ -209,6 +220,9 @@ pub fn render_review(review: &Value, proof: &[(String, String)], receipt_sha256:
 
     let mut parts = vec![format!("**{}** ({})", text("name"), tally.join(" · "))];
     parts.push(review["summary"].as_str().unwrap_or("").to_string());
+    if let Some(omitted) = review["omitted_nits"].as_u64().filter(|n| *n > 0) {
+        parts.push(format!("{omitted} additional nits omitted (limit: {}).", spec["finding_policy"]["max_new_nits"]));
+    }
     if still_open > 0 {
         parts.push(if still_open == 1 { "1 earlier finding is still open, and not posted again.".into() } else { format!("{still_open} earlier findings are still open, and not posted again.") });
     }
@@ -253,8 +267,103 @@ pub fn own_findings(reviews: &[Value], comments: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-/// Findings from several passes, keeping the first one reported for each line.
+/// Match only our verified prior comments, never trust a model's earlier flag alone.
+pub fn verified_earlier(findings: &Value, earlier: &[Value]) -> Value {
+    fn body(text: &str) -> String {
+        let text = if text.starts_with("**") { text.split_once(":**").filter(|(prefix, _)| !prefix.contains('\n')).map_or(text, |(_, rest)| rest) } else { text };
+        text.split(|c| matches!(c, ' ' | '\t' | '\r' | '\n')).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ")
+    }
+    Value::Array(findings.as_array().into_iter().flatten().map(|f| {
+        let mut f = f.clone();
+        if earlier.iter().any(|old| old["path"] == f["path"] && body(old["body"].as_str().unwrap_or("")) == body(f["body"].as_str().unwrap_or(""))) { f["earlier"] = Value::Bool(true); }
+        else if let Some(fields) = f.as_object_mut() { fields.remove("earlier"); }
+        f
+    }).collect())
+}
+
+fn rank(f: &Value) -> u8 {
+    (if f["severity"] == "Important" { 2 } else { 0 }) + (if f["pass"] == "Security" { 1 } else { 0 })
+}
+
+/// Remove exact repeats, preserving distinct defects on the same line.
 pub fn merge_findings(lists: &[Value]) -> Vec<Value> {
+    let mut found: Vec<(String, Value)> = Vec::new();
+    for f in lists.iter().flat_map(|l| l.as_array().into_iter().flatten()) {
+        let body = f["body"].as_str().unwrap_or("").split(|c| matches!(c, ' ' | '\t' | '\r' | '\n')).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
+        let key = serde_json::json!([f["path"], js_number(&f["line"]), truthy(&f["earlier"]), body]).to_string();
+        match found.iter_mut().find(|(k, _)| k == &key) {
+            Some((_, kept)) if rank(f) > rank(kept) => *kept = f.clone(),
+            Some(_) => {},
+            None => found.push((key, f.clone())),
+        }
+    }
+    found.into_iter().map(|(_, f)| f).collect()
+}
+
+pub fn consolidation_system_prompt(rubric: &str) -> String {
+    spec()["consolidation_system_prompt"].as_str().expect("consolidation prompt").replacen("{rubric}", rubric, 1)
+}
+
+pub fn consolidation_prompt(candidates: &[Value]) -> String {
+    let rows: Vec<Value> = candidates.iter().enumerate().map(|(id, f)| {
+        let mut row = serde_json::json!({});
+        if let Some(fields) = f.as_object() {
+            for (key, value) in fields { row[key] = value.clone(); }
+        }
+        row["id"] = serde_json::json!(id);
+        row
+    }).collect();
+    serde_json::to_string(&rows).expect("candidate JSON")
+}
+
+fn candidate_id(v: &Value, count: usize) -> Option<usize> {
+    v.as_f64().filter(|n| n.is_finite() && n.fract() == 0.0 && *n >= 0.0 && *n < count as f64).map(|n| n as usize)
+}
+
+/// The consolidator must account for every candidate exactly once.
+pub fn check_consolidation(result: &Value, candidates: &[Value]) -> Option<String> {
+    let Some(groups) = result["groups"].as_array().filter(|_| result["summary"].is_string()) else {
+        return Some("submit_consolidation needs a summary and groups".into());
+    };
     let mut seen = std::collections::HashSet::new();
-    lists.iter().flat_map(|l| l.as_array().cloned().unwrap_or_default()).filter(|f| seen.insert(format!("{}:{}", f["path"].as_str().unwrap_or(""), js_number(&f["line"])))).collect()
+    for group in groups {
+        let Some(ids) = group.as_array().filter(|g| !g.is_empty()) else { return Some("each group must contain candidate ids".into()); };
+        let mut first: Option<&Value> = None;
+        for id in ids {
+            let Some(id) = candidate_id(id, candidates.len()).filter(|id| seen.insert(*id)) else {
+                return Some("each candidate id must appear exactly once".into());
+            };
+            let f = &candidates[id];
+            if first.is_some_and(|a| a["path"] != f["path"] || truthy(&a["earlier"]) != truthy(&f["earlier"])) {
+                return Some("groups must stay within one file and not mix earlier and new findings".into());
+            }
+            first = Some(f);
+        }
+    }
+    if seen.len() != candidates.len() { return Some("each candidate id must appear exactly once".into()); }
+    None
+}
+
+/// Retain highest severity, then cap new nits across the entire review.
+pub fn finalize_review(candidates: &[Value], decision: &Value) -> anyhow::Result<Value> {
+    if let Some(problem) = check_consolidation(decision, candidates) { anyhow::bail!(problem); }
+    let (mut nits, mut omitted) = (0, 0);
+    let max = spec()["finding_policy"]["max_new_nits"].as_u64().expect("nit limit");
+    let mut findings = Vec::new();
+    for group in decision["groups"].as_array().expect("checked groups") {
+        let mut kept: Option<&Value> = None;
+        for id in group.as_array().expect("checked group") {
+            let f = &candidates[candidate_id(id, candidates.len()).expect("checked id")];
+            if kept.is_none_or(|a| rank(f) > rank(a)) { kept = Some(f); }
+        }
+        let f = kept.expect("nonempty group");
+        if !truthy(&f["earlier"]) && f["severity"] == "Nit" {
+            nits += 1;
+            if nits > max { omitted += 1; continue; }
+        }
+        findings.push(f.clone());
+    }
+    let mut review = serde_json::json!({ "summary": decision["summary"], "findings": findings });
+    if omitted > 0 { review["omitted_nits"] = serde_json::json!(omitted); }
+    Ok(review)
 }

@@ -53,6 +53,31 @@ same review the App and the Action run:
 New cases and models are measured before any claim here changes. React 👍 or
 👎 on a finding: that is how it is measured on real code.
 
+## Review quality rules
+
+Both the Action and hosted App use the same output policy: categories are
+`Bugs` or `Security`, severities are `Important` or `Nit`. Repository rubrics
+still supply the checks and constraints, but custom category/severity labels
+are no longer accepted. Invalid submissions return to the model for repair.
+
+Earlier status is established by matching the finding’s file and normalized body against comments from this reviewer’s own prior reviews. Model flags alone cannot suppress publication. Paraphrased prior findings may still be reported again; the match deliberately avoids fuzzy suppression.
+
+Independent passes produce candidates. Exact repeats of the same text at the same anchor are merged.
+Distinct defects sharing a line and matching text at different anchors are
+kept for semantic consolidation. When multiple candidates remain, a separate encrypted, signed model
+loop groups paraphrases by root cause and fix. It must account for every
+candidate once; groups cannot cross files or mix earlier and new findings.
+This semantic grouping remains a model judgment, not proof that issues are
+identical. A failed consolidation stops the review rather than posting the raw
+candidates.
+
+Each group keeps its highest-severity representative. The final review includes
+at most five **new** nits across all passes; Important findings and earlier
+unresolved findings do not consume that budget. Omitted nits are counted in the
+review. Consolidation adds model work when needed, and every consolidation turn
+is included in the same receipt. Existing published eval numbers predate this
+step and need to be measured again before claiming a quality improvement.
+
 ## Review a commit or range without a PR
 
 The CLI and GitHub Action also accept explicit commit reviews. The hosted App
