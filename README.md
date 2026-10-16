@@ -73,7 +73,13 @@ review is neutral, even when findings exist: it is informational.
 
 `--dry-run` previews the check without publishing and works with a read-only
 token. It still runs the model review and spends model credits.
-`--review path.json` saves that preview instead of printing it.
+The complete check report is saved as `private-review.json` before publishing
+or checking GitHub's output-size limit. `--review path.json` chooses another
+path, including for dry-runs. This file contains findings and may include code;
+it is separate from the receipt, which contains hashes rather than findings.
+The Action retains it as a separate report artifact even if publishing fails.
+An oversized report is saved in full and the check fails; no partial findings
+are published. With PR reviews, `--review` also saves the report when supplied.
 `--receipt path.json` selects the receipt file. Ordinary user/OAuth tokens cannot
 publish checks; for local use, choose a GitHub App installation token or dry-run.
 
@@ -111,7 +117,10 @@ jobs:
           head: ${{ inputs.head }}
 ```
 
-Alternatively pass `commit:` alone. Do not combine these inputs with `pr:`.
+Alternatively pass `commit:` alone. Explicit commit/range inputs take precedence
+over the event's PR default. Explicitly combining them with `pr:` is rejected.
+With no commit/range inputs, PR and `/review` comment events keep reviewing the
+PR that triggered the workflow.
 Automatic push reviews are not enabled by this example. Existing PR re-reviews
 continue to check earlier findings and report those still open.
 

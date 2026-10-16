@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { commitChange, commitCheck, main, systemPrompt, userPrompt } from '../review/review.mjs';
+import { commitChange, commitCheck, main, systemPrompt, userPrompt, validateCommitCheck } from '../review/review.mjs';
 import { github } from '../review/github.mjs';
 import { sha256 } from '../core/sign.mjs';
 
@@ -42,7 +42,7 @@ test('commit checks preserve inline findings, receipt, and reviewed revisions wi
   assert.equal(check.conclusion, 'neutral');
   assert.match(check.output.summary, /a.js:4/);
   assert.match(check.output.summary, /receipt hash/);
-  assert.throws(() => commitCheck({ base: { sha: base }, head: { sha: head } }, { body: 'x'.repeat(66000), comments: [] }), /output limit/);
+  assert.throws(() => validateCommitCheck(commitCheck({ base: { sha: base }, head: { sha: head } }, { body: 'x'.repeat(66000), comments: [] })), /output limit/);
 });
 
 test('commit prompt adaptation preserves repository instructions verbatim', () => {
@@ -103,7 +103,7 @@ function workflow(t, ghOverrides = {}, serviceOverrides = {}) {
   const env = { GITHUB_REPOSITORY: 'owner/repo', GITHUB_TOKEN: 'fixture', NEARAI_API_KEY: 'fixture' };
   return {
     events, saved, inputs, receiptPath, reviewPath, env,
-    run: (args = [], extraEnv = {}) => main(['--receipt', receiptPath, ...args], { ...env, ...extraEnv }, services),
+    run: (args = [], extraEnv = {}) => main(['--receipt', receiptPath, '--review', reviewPath, ...args], { ...env, ...extraEnv }, services),
   };
 }
 
@@ -213,4 +213,116 @@ test('historical PR dry-runs retain their sample format and omit earlier finding
   assert.ok(Array.isArray(sample.comments));
   assert.equal(sample.output, undefined);
   assert.deepEqual(w.inputs[0].earlier, []);
+});
+
+test('oversized reviews preserve every finding and receipt before rejecting publication or preview', async t => {
+  for (const dryRun of [false, true]) await t.test(dryRun ? 'dry-run' : 'publishing', async t => {
+    const findings = [0, 1, 2].map(i => ({
+      path: `file-${i}.js`, line: 1, pass: 'Bugs', severity: 'Important',
+      body: `Finding ${i}: ` + 'x'.repeat(24000),
+    }));
+    const w = workflow(t, {}, { reviewChange: async () => ({
+      review: { summary: 'Combined findings from three passes.', findings }, turns: [{ id: 'fixture' }],
+    }) });
+    await assert.rejects(w.run(['--commit', 'feature', ...(dryRun ? ['--dry-run'] : [])]), /output limit; full report saved/);
+    const report = JSON.parse(readFileSync(w.reviewPath, 'utf8'));
+    for (const finding of findings) assert.ok(report.output.summary.includes(finding.body));
+    assert.ok(report.output.summary.includes(sha256(readFileSync(w.receiptPath, 'utf8'))));
+    if (dryRun) assert.equal(w.saved.length, 0, 'dry-runs must not write checks');
+    else {
+      assert.equal(w.saved.at(-1).conclusion, 'failure');
+      assert.match(w.saved.at(-1).output.summary, /complete report and receipt were saved/);
+      assert.ok(w.saved.every(check => check.conclusion !== 'neutral'), 'no partial review is published');
+    }
+  });
+});
+
+test('a failed final GitHub write leaves a recoverable complete report', async t => {
+  let calls = 0;
+  const w = workflow(t, { updateCheck: async () => { calls++; throw new Error('GitHub: 503'); } });
+  await assert.rejects(w.run(['--commit', 'feature']), /503/);
+  assert.equal(calls, 2, 'publishing and best-effort failure update both attempted');
+  const report = JSON.parse(readFileSync(w.reviewPath, 'utf8'));
+  assert.match(report.output.summary, /New finding/);
+  assert.match(report.output.summary, /Caller finding/);
+  assert.ok(report.output.summary.includes(sha256(readFileSync(w.receiptPath, 'utf8'))));
+});
+
+test('explicit commit and range targets take precedence over the event PR default', async t => {
+  for (const target of [{ REVIEW_COMMIT: 'feature' }, { REVIEW_BASE: 'main', REVIEW_HEAD: 'feature' }]) {
+    const w = workflow(t);
+    await w.run([], { ...target, PR_NUMBER_DEFAULT: '7', GITHUB_EVENT_NAME: 'pull_request' });
+    assert.equal(w.saved[0].head_sha, head);
+    assert.equal(w.saved[1].conclusion, 'neutral');
+    assert.deepEqual(w.inputs[0].earlier, []);
+  }
+});
+
+test('PR events and comment events still default to PR reviews when no commit target is supplied', async t => {
+  for (const event of ['pull_request', 'issue_comment']) {
+    let authorized = 0;
+    const w = workflow(t, {
+      check: async () => assert.fail('must review the event PR'),
+      access: async login => { assert.equal(login, 'dev'); authorized++; return { permission: 'write', role: 'write' }; },
+    });
+    const extraEnv = { PR_NUMBER_DEFAULT: '7', GITHUB_EVENT_NAME: event };
+    if (event === 'issue_comment') {
+      const eventPath = `${w.reviewPath}.event`;
+      writeFileSync(eventPath, JSON.stringify({
+        action: 'created', issue: { number: 7, pull_request: {} },
+        comment: { body: '/review', user: { login: 'dev' } },
+      }));
+      extraEnv.GITHUB_EVENT_PATH = eventPath;
+    }
+    await w.run([], extraEnv);
+    assert.equal(w.saved[0].commit_id, head);
+    assert.equal(w.saved[0].event, 'COMMENT');
+    assert.equal(authorized, event === 'issue_comment' ? 1 : 0);
+  }
+});
+
+test('an explicit PR together with a commit still fails even when an event default exists', async t => {
+  const w = workflow(t);
+  await assert.rejects(w.run([], { REVIEW_COMMIT: 'feature', PR_NUMBER: '8', PR_NUMBER_DEFAULT: '7' }), /Choose a PR/);
+  assert.deepEqual(w.events, []);
+});
+
+test('cross-repository checks and proof links point to the workflow repository', async t => {
+  const w = workflow(t);
+  await w.run(['--repo', 'reviewed/repo', '--commit', 'feature'], {
+    GITHUB_REPOSITORY: 'runner/repo', GITHUB_SERVER_URL: 'https://github.example', GITHUB_RUN_ID: '42',
+  });
+  const url = 'https://github.example/runner/repo/actions/runs/42';
+  assert.equal(w.saved[0].details_url, url);
+  assert.ok(w.saved[1].output.summary.includes(url));
+  const report = JSON.parse(readFileSync(w.reviewPath, 'utf8'));
+  assert.equal(report.details_url, url);
+  assert.equal(JSON.parse(readFileSync(w.receiptPath, 'utf8')).subject.repository, 'reviewed/repo');
+});
+
+test('a run id without a workflow repository does not invent an artifact URL', async t => {
+  const w = workflow(t);
+  await w.run(['--repo', 'reviewed/repo', '--commit', 'feature'], { GITHUB_REPOSITORY: '', GITHUB_RUN_ID: '42' });
+  assert.equal(w.saved[0].details_url, undefined);
+  assert.doesNotMatch(w.saved[1].output.summary, /actions\/runs\/42/);
+});
+
+test('Action distinguishes explicit PRs from event defaults and retains both report artifacts on failure', () => {
+  const action = readFileSync(new URL('../review/action.yml', import.meta.url), 'utf8');
+  const prInput = action.slice(action.indexOf('  pr:\n'), action.indexOf('  commit:\n'));
+  assert.doesNotMatch(prInput, /default:/, 'the event number must not become an explicit conflicting PR');
+  assert.match(action, /PR_NUMBER: \$\{\{ inputs.pr \}\}/);
+  assert.match(action, /PR_NUMBER_DEFAULT: \$\{\{ github.event.pull_request.number \|\| github.event.issue.number \}\}/);
+  assert.match(action, /--review "\$RUNNER_TEMP\/private-review.json"/);
+  for (const path of ['private-review-receipt.json', 'private-review.json']) {
+    const upload = action.slice(action.lastIndexOf('- if: always()', action.indexOf(('path: ${{ runner.temp }}/' + path))));
+    assert.ok(upload.includes(('path: ${{ runner.temp }}/' + path)));
+  }
+});
+
+
+test('a report cannot overwrite its receipt', async t => {
+  const w = workflow(t);
+  await assert.rejects(w.run(['--commit', 'feature', '--review', w.receiptPath]), /paths must be different/);
+  assert.deepEqual(w.events, []);
 });

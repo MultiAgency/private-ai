@@ -13,8 +13,7 @@ inputs:
       on a GitHub App token.
     default: ${{ github.token }}
   pr:
-    description: Pull request number.
-    default: ${{ github.event.pull_request.number || github.event.issue.number }}
+    description: Pull request number. Defaults to the event's PR when no commit or range is supplied.
   commit:
     description: Commit to review against its first parent; mutually exclusive with pr and base/head.
   base:
@@ -56,6 +55,7 @@ runs:
         NEARAI_API_KEY: ${{ inputs.nearai-api-key }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ inputs.pr }}
+        PR_NUMBER_DEFAULT: ${{ github.event.pull_request.number || github.event.issue.number }}
         REVIEW_COMMIT: ${{ inputs.commit }}
         REVIEW_BASE: ${{ inputs.base }}
         REVIEW_HEAD: ${{ inputs.head }}
@@ -63,7 +63,7 @@ runs:
         MODEL: ${{ inputs.model }}
         ALLOW_UNPATCHED_MODEL: ${{ inputs.allow-unpatched-model }}
         PASSES: ${{ inputs.passes }}
-      run: node "$GITHUB_ACTION_PATH/review.mjs" --receipt "$RUNNER_TEMP/private-review-receipt.json"
+      run: node "$GITHUB_ACTION_PATH/review.mjs" --receipt "$RUNNER_TEMP/private-review-receipt.json" --review "$RUNNER_TEMP/private-review.json"
 
     - if: always()
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -71,5 +71,14 @@ runs:
         path: ${{ runner.temp }}/private-review-receipt.json
         # The receipt downloads as the .json file itself, ready for the page's
         # checker, not as a zip. Unarchived, the artifact takes the file's name.
+        archive: false
+        if-no-files-found: ignore
+
+    # Keep the full report independently of the receipt, including when GitHub
+    # refuses an oversized check or publishing fails. Reports may contain code.
+    - if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        path: ${{ runner.temp }}/private-review.json
         archive: false
         if-no-files-found: ignore

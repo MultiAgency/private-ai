@@ -235,12 +235,18 @@ export async function commitChange(gh, { commit, base, head }) {
 export function commitCheck(pr, posted, runUrl) {
   const findings = posted.comments.map(c => `- \`${c.path}:${c.line}\` ${c.body}`).join("\n");
   const summary = `${pr.base.sha}..${pr.head.sha}\n\n${posted.body}${findings ? `\n\n**Findings on changed lines**\n${findings}` : ""}`;
-  if (Buffer.byteLength(summary, "utf8") > 65000) throw new Error("Review exceeds GitHub's check output limit; saved receipt, no findings posted");
   return {
     name: NAME, head_sha: pr.head.sha, status: "completed", conclusion: "neutral",
     ...(runUrl ? { details_url: runUrl } : {}),
     output: { title: "Commit review", summary },
   };
+}
+
+/** Validate only after saving the complete report, so a publishing limit loses no findings. */
+export function validateCommitCheck(check) {
+  if (Buffer.byteLength(check.output.summary, "utf8") > 65000) {
+    throw new Error("Review exceeds GitHub's check output limit; full report saved, no findings posted");
+  }
 }
 
 async function loadRubric(gh, ref, paths) {
@@ -288,11 +294,15 @@ export async function main(args = process.argv.slice(2), environment = process.e
   const commit = values.commit || environment.REVIEW_COMMIT;
   const base = values.base || environment.REVIEW_BASE;
   const rangeHead = values.head || environment.REVIEW_HEAD;
-  const prNumber = values.pr || environment.PR_NUMBER;
-  const standalone = Boolean(commit || base || environment.REVIEW_HEAD || (rangeHead && !prNumber));
-  if (standalone && prNumber) throw new Error("Choose a PR or a commit/range");
+  const requestedPr = values.pr || environment.PR_NUMBER;
+  const defaultPr = environment.PR_NUMBER_DEFAULT;
+  const standalone = Boolean(commit || base || environment.REVIEW_HEAD || (rangeHead && !(requestedPr || defaultPr)));
+  if (standalone && requestedPr) throw new Error("Choose a PR or a commit/range");
   if (standalone && commit && (base || rangeHead)) throw new Error("Use --commit or --base with --head, not both");
   if (standalone && !commit && (!base || !rangeHead)) throw new Error("A range requires both --base and --head");
+  const prNumber = requestedPr || (!standalone && defaultPr);
+  const reviewPath = values.review ? resolve(values.review) : standalone ? resolve("private-review.json") : null;
+  if (reviewPath === receiptPath) throw new Error("Review and receipt paths must be different");
   if (values.check && (standalone || values.pr || values.head)) throw new Error("--check cannot be combined with a review target");
   const setupOnly = values.check || (environment.GITHUB_EVENT_NAME === "workflow_dispatch" && !standalone && !prNumber);
   const number = standalone || setupOnly ? null : Number(prNumber || env("PR_NUMBER"));
@@ -312,9 +322,10 @@ export async function main(args = process.argv.slice(2), environment = process.e
     return;
   }
 
-  const runUrl = environment.GITHUB_RUN_ID &&
-    `${environment.GITHUB_SERVER_URL || "https://github.com"}/${repo}/actions/runs/${environment.GITHUB_RUN_ID}`;
+  const runUrl = environment.GITHUB_RUN_ID && environment.GITHUB_REPOSITORY &&
+    `${environment.GITHUB_SERVER_URL || "https://github.com"}/${environment.GITHUB_REPOSITORY}/actions/runs/${environment.GITHUB_RUN_ID}`;
   let checkId;
+  let reviewSaved = false;
   try {
     const pr = standalone ? await commitChange(gh, { commit, base, head: rangeHead }) : await gh.pull(number);
     if (values.head && !standalone) {
@@ -368,10 +379,16 @@ export async function main(args = process.argv.slice(2), environment = process.e
 
     const posted = renderReview({ review: result.review, turns: result.turns, attestation, model, receiptSha256, runUrl, commentable: commentableLines(files) });
     const output = standalone ? commitCheck(pr, posted, runUrl) : posted;
+    // Keep every finding before validation or network writes. The receipt
+    // contains hashes, so it cannot recover a report that fails to publish.
+    if (reviewPath) {
+      writeFileSync(reviewPath, `${JSON.stringify(output, null, 2)}\n`, { mode: 0o600 });
+      reviewSaved = true;
+      log(`review: ${reviewPath}`);
+    }
+    if (standalone) validateCommitCheck(output);
     if (dryRun) {
-      // --review keeps what would have been posted, e.g. as the page's sample.
-      if (values.review) writeFileSync(resolve(values.review), `${JSON.stringify(output, null, 2)}\n`);
-      else log(JSON.stringify(output, null, 2));
+      if (!values.review) log(JSON.stringify(output, null, 2));
       return;
     }
     if (standalone) {
@@ -384,7 +401,12 @@ export async function main(args = process.argv.slice(2), environment = process.e
   } catch (error) {
     if (checkId !== undefined) await gh.updateCheck(checkId, {
       status: "completed", conclusion: "failure",
-      output: { title: "Review stopped", summary: "The review did not complete. Check the review runner's log before trying again." },
+      output: {
+        title: "Review stopped",
+        summary: reviewSaved
+          ? "Publishing the review failed. The complete report and receipt were saved by the runner; check the workflow artifacts or local files before trying again."
+          : "The review did not complete. Check the review runner's log before trying again.",
+      },
     }).catch(() => {});
     if (!dryRun && !standalone) await gh.comment(number, `**${NAME} stopped:** ${error.message}. No code was posted anywhere else. Re-run the job to try again; if it keeps stopping, the run's log names the step.`).catch(() => {});
     throw error;

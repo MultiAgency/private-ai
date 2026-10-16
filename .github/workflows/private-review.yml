@@ -1,0 +1,50 @@
+name: private-review
+
+# Private AI review: the model reads this pull request only inside a NEAR AI
+# Cloud enclave, end-to-end encrypted. See https://github.com/MultiAgency/private-ai
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+  issue_comment:
+    types: [created]
+  # Run by hand (Actions tab, Run workflow) to check the setup: no code is read.
+  workflow_dispatch:
+
+jobs:
+  # A refused comment cannot load the model key or cancel an ongoing review.
+  gate:
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name == github.repository
+        && !github.event.pull_request.draft)
+      || (github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && startsWith(github.event.comment.body, '/review')
+        && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      allowed: ${{ steps.gate.outputs.allowed }}
+    steps:
+      - id: gate
+        uses: MultiAgency/private-ai/review/gate@f439217d37abeec46dc011321308fbd0c0d0dd8e # f439217
+        with:
+          allow-forks: "false"
+  review:
+    needs: gate
+    if: needs.gate.outputs.allowed == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: private-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: MultiAgency/private-ai/review@f439217d37abeec46dc011321308fbd0c0d0dd8e # f439217
+        with:
+          nearai-api-key: ${{ secrets.NEARAI_API_KEY }}
