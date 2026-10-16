@@ -258,6 +258,31 @@ async function loadRubric(gh, ref, paths) {
   return parts.join("\n\n") || DEFAULT_RUBRIC;
 }
 
+/** Resolve CLI/Action target precedence without contacting a service. */
+export function resolveReviewTarget(values, environment) {
+  const commit = values.commit || environment.REVIEW_COMMIT;
+  const base = values.base || environment.REVIEW_BASE;
+  const head = values.head || environment.REVIEW_HEAD;
+  const requestedPr = values.pr || environment.PR_NUMBER;
+  const defaultPr = environment.PR_NUMBER_DEFAULT;
+  // Action head/base/commit inputs select standalone reviews, even on PR events.
+  // CLI --head with a PR retains the historical PR dry-run path.
+  const explicitStandalone = Boolean(commit || base || environment.REVIEW_HEAD);
+  const historicalHead = !explicitStandalone && (requestedPr || defaultPr) ? values.head : undefined;
+  const standalone = explicitStandalone || Boolean(head && !historicalHead);
+  if (standalone && requestedPr) throw new Error("Choose a PR or a commit/range");
+  if (standalone && commit && (base || head)) throw new Error("Use --commit or --base with --head, not both");
+  if (standalone && !commit && (!base || !head)) throw new Error("A range requires both --base and --head");
+  if (values.check && (standalone || values.pr || values.head)) throw new Error("--check cannot be combined with a review target");
+  const pr = requestedPr || (!standalone && defaultPr);
+  if (values.check || (environment.GITHUB_EVENT_NAME === "workflow_dispatch" && !standalone && !pr)) return { kind: "setup" };
+  if (standalone) return commit ? { kind: "commit", commit } : { kind: "range", base, head };
+  if (!pr) throw new Error("PR_NUMBER is required");
+  const number = Number(pr);
+  if (!Number.isSafeInteger(number) || number <= 0) throw new Error("PR number must be a positive integer");
+  return { kind: "pr", number, ...(historicalHead && { historicalHead }) };
+}
+
 export async function main(args = process.argv.slice(2), environment = process.env, dependencies = {}) {
   const {
     github: connectGithub = github, nearai: connectModel = nearai,
@@ -291,26 +316,15 @@ export async function main(args = process.argv.slice(2), environment = process.e
   const passes = Number(environment.PASSES || spec.defaults.passes);
   const allowUnpatchedModel = environment.ALLOW_UNPATCHED_MODEL === "true";
   if (!Number.isInteger(passes) || passes < 1 || passes > 5) throw new Error(`PASSES must be 1 to 5, not ${environment.PASSES}`);
-  const commit = values.commit || environment.REVIEW_COMMIT;
-  const base = values.base || environment.REVIEW_BASE;
-  const rangeHead = values.head || environment.REVIEW_HEAD;
-  const requestedPr = values.pr || environment.PR_NUMBER;
-  const defaultPr = environment.PR_NUMBER_DEFAULT;
-  const standalone = Boolean(commit || base || environment.REVIEW_HEAD || (rangeHead && !(requestedPr || defaultPr)));
-  if (standalone && requestedPr) throw new Error("Choose a PR or a commit/range");
-  if (standalone && commit && (base || rangeHead)) throw new Error("Use --commit or --base with --head, not both");
-  if (standalone && !commit && (!base || !rangeHead)) throw new Error("A range requires both --base and --head");
-  const prNumber = requestedPr || (!standalone && defaultPr);
+  const target = resolveReviewTarget(values, environment);
+  const standalone = target.kind === "commit" || target.kind === "range";
+  const number = target.kind === "pr" ? target.number : null;
   const reviewPath = values.review ? resolve(values.review) : standalone ? resolve("private-review.json") : null;
   if (reviewPath === receiptPath) throw new Error("Review and receipt paths must be different");
-  if (values.check && (standalone || values.pr || values.head)) throw new Error("--check cannot be combined with a review target");
-  const setupOnly = values.check || (environment.GITHUB_EVENT_NAME === "workflow_dispatch" && !standalone && !prNumber);
-  const number = standalone || setupOnly ? null : Number(prNumber || env("PR_NUMBER"));
-  if (number !== null && (!Number.isSafeInteger(number) || number <= 0)) throw new Error("PR number must be a positive integer");
   const gh = connectGithub(env("GITHUB_TOKEN"), repo);
   const client = connectModel(env("NEARAI_API_KEY"));
 
-  if (setupOnly) {
+  if (target.kind === "setup") {
     if (!report(await checkSetup({ client, gh, model, allowUnpatchedModel }))) process.exitCode = 1;
     return;
   }
@@ -327,11 +341,11 @@ export async function main(args = process.argv.slice(2), environment = process.e
   let checkId;
   let reviewSaved = false;
   try {
-    const pr = standalone ? await commitChange(gh, { commit, base, head: rangeHead }) : await gh.pull(number);
-    if (values.head && !standalone) {
+    const pr = standalone ? await commitChange(gh, target) : await gh.pull(number);
+    if (target.historicalHead) {
       if (!dryRun) throw new Error("--head reviews an earlier commit, so it needs --dry-run");
-      const commits = await gh.compare(pr.base.ref, values.head);
-      Object.assign(pr, { base: { ...pr.base, sha: commits.merge_base_commit.sha }, head: { ...pr.head, sha: values.head }, files: commits.files });
+      const commits = await gh.compare(pr.base.ref, target.historicalHead);
+      Object.assign(pr, { base: { ...pr.base, sha: commits.merge_base_commit.sha }, head: { ...pr.head, sha: target.historicalHead }, files: commits.files });
     }
     if (standalone && !pr.files.length) throw new Error("No changed files in this range; no review was started");
     if (standalone && !dryRun) {
@@ -349,7 +363,7 @@ export async function main(args = process.argv.slice(2), environment = process.e
       pr.files ?? gh.files(number),
       loadRubric(gh, pr.base.sha, rubricPaths),
       gh.tarball(pr.head.sha),
-      standalone || values.head ? [] : earlierFindings(gh, number),
+      standalone || target.historicalHead ? [] : earlierFindings(gh, number),
     ]);
     log(`${standalone ? "commit range" : `#${number}`}: ${files.length} files changed, ${earlier.length} earlier findings; head ${pr.head.sha}`);
 

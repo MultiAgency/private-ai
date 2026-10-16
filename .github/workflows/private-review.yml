@@ -38,7 +38,7 @@ jobs:
     if: needs.gate.outputs.allowed == 'true'
     runs-on: ubuntu-latest
     concurrency:
-      group: private-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      group: private-review-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
       cancel-in-progress: true
     permissions:
       contents: read

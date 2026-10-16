@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { commitChange, commitCheck, main, systemPrompt, userPrompt, validateCommitCheck } from '../review/review.mjs';
+import { commitChange, commitCheck, main, resolveReviewTarget, systemPrompt, userPrompt, validateCommitCheck } from '../review/review.mjs';
 import { github } from '../review/github.mjs';
 import { sha256 } from '../core/sign.mjs';
 
@@ -365,4 +365,32 @@ test('each Action invocation owns fresh files and unique unarchived artifact nam
   // With archive:false, upload-artifact ignores name: and uses the basename.
   const names = [first, second, third].flatMap(paths => Object.values(paths).map(path => path.split('/').at(-1)));
   assert.equal(new Set(names).size, 6);
+});
+
+test('repository setup dispatches do not cancel one another', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/private-review.yml', import.meta.url), 'utf8');
+  const expression = workflow.match(/group: private-review-\$\{\{ (.+) \}\}/)[1];
+  const group = new Function('github', `return (${expression});`);
+  const manual = run_id => ({ run_id, event: { pull_request: {}, issue: {} } });
+  assert.notEqual(group(manual(1)), group(manual(2)));
+  assert.equal(group({ run_id: 1, event: { pull_request: { number: 7 }, issue: {} } }), 7);
+});
+
+
+test('target resolution makes setup, event defaults, explicit targets, and historical PRs distinct', () => {
+  const cases = [
+    [{ check: true }, {}, { kind: 'setup' }],
+    [{}, { GITHUB_EVENT_NAME: 'workflow_dispatch' }, { kind: 'setup' }],
+    [{}, { PR_NUMBER_DEFAULT: '7' }, { kind: 'pr', number: 7 }],
+    [{ pr: '8' }, { PR_NUMBER_DEFAULT: '7' }, { kind: 'pr', number: 8 }],
+    [{ commit: 'feature' }, { PR_NUMBER_DEFAULT: '7' }, { kind: 'commit', commit: 'feature' }],
+    [{ base: 'main', head: 'feature' }, { PR_NUMBER_DEFAULT: '7' }, { kind: 'range', base: 'main', head: 'feature' }],
+    [{ head: 'historic' }, { PR_NUMBER_DEFAULT: '7' }, { kind: 'pr', number: 7, historicalHead: 'historic' }],
+    [{ pr: '8', head: 'historic' }, {}, { kind: 'pr', number: 8, historicalHead: 'historic' }],
+    [{}, { REVIEW_BASE: 'main', REVIEW_HEAD: 'feature', PR_NUMBER_DEFAULT: '7' }, { kind: 'range', base: 'main', head: 'feature' }],
+  ];
+  for (const [values, environment, expected] of cases) assert.deepEqual(resolveReviewTarget(values, environment), expected);
+  assert.throws(() => resolveReviewTarget({ head: 'feature' }, {}), /requires both/);
+  assert.throws(() => resolveReviewTarget({}, { PR_NUMBER_DEFAULT: 'NaN' }), /positive integer/);
+  assert.throws(() => resolveReviewTarget({}, {}), /PR_NUMBER is required/);
 });
