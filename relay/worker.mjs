@@ -16,6 +16,8 @@ import { DurableObject } from "cloudflare:workers";
 import { driver, eventInput, installationEvent, reviewRequest, signedByGitHub } from "./relay.mjs";
 import { applyStat, emptyStats, renderStatsHtml, summarize } from "./stats.mjs";
 
+import { readWebhookBody } from "./http.mjs";
+
 import { outlayer } from "./outlayer.mjs";
 import { recoverReview } from "./recovery.mjs";
 
@@ -48,13 +50,18 @@ export default {
     }
 
     if (request.method !== "POST" || url.pathname !== "/github") return new Response("not found", { status: 404 });
-    const body = await request.text();
+    let body;
+    try {
+      body = await readWebhookBody(request);
+    } catch (error) {
+      return new Response("invalid webhook body", { status: error.status ?? 400 });
+    }
     if (!(await signedByGitHub(env.WEBHOOK_SECRET, body, request.headers.get("x-hub-signature-256")))) {
       return new Response("bad signature", { status: 401 });
     }
     let payload;
     try {
-      payload = JSON.parse(body);
+      payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
     } catch {
       return new Response("bad body", { status: 400 });
     }

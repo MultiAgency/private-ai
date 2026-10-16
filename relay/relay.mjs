@@ -11,9 +11,9 @@ const hex = bytes => [...new Uint8Array(bytes)].map(b => b.toString(16).padStart
 
 /** Whether `X-Hub-Signature-256` is GitHub's HMAC-SHA256 of the exact body under our secret. */
 export async function signedByGitHub(secret, body, header) {
-  if (!secret || !header?.startsWith("sha256=")) return false;
+  if (!secret || !/^sha256=[0-9a-f]{64}$/.test(header ?? "")) return false;
   const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const expected = `sha256=${hex(await crypto.subtle.sign("HMAC", key, encoder.encode(body)))}`;
+  const expected = `sha256=${hex(await crypto.subtle.sign("HMAC", key, (typeof body === "string" ? encoder.encode(body) : body)))}`;
   if (expected.length !== header.length) return false;
   let diff = 0;
   for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ header.charCodeAt(i);
@@ -28,6 +28,7 @@ export async function signedByGitHub(secret, body, header) {
 // before it costs an OutLayer call: they cannot write to it. Everyone else's
 // goes on, and the enclave checks their permission on GitHub (an organization
 // member can show as a contributor, so the association alone decides nothing more).
+const validId = value => Number.isSafeInteger(value) && value > 0;
 const STRANGERS = new Set(["NONE", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "MANNEQUIN"]);
 
 /**
@@ -40,7 +41,7 @@ const STRANGERS = new Set(["NONE", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "MAN
 export function reviewRequest(event, payload) {
   const installation = payload?.installation?.id;
   const repo = payload?.repository?.id;
-  if (!Number.isInteger(installation) || !Number.isInteger(repo)) return null;
+  if (!validId(installation) || !validId(repo)) return null;
   let pr;
   let comment;
   let rerun;
@@ -52,8 +53,8 @@ export function reviewRequest(event, payload) {
     pr = payload.check_run?.pull_requests?.[0]?.number;
     rerun = payload.check_run?.id;
   }
-  if (!Number.isInteger(pr)) return null;
-  return { installation, repo_id: repo, pr, ...(Number.isInteger(comment) && { comment }), ...(Number.isInteger(rerun) && { rerun }) };
+  if (!validId(pr) || !(validId(comment) || validId(rerun))) return null;
+  return { installation, repo_id: repo, pr, ...(validId(comment) && { comment }), ...(validId(rerun) && { rerun }) };
 }
 
 /**
@@ -62,7 +63,7 @@ export function reviewRequest(event, payload) {
  */
 export function installationEvent(event, payload) {
   const installation = payload?.installation?.id;
-  if (!Number.isInteger(installation)) return null;
+  if (!validId(installation)) return null;
   const account = payload?.installation?.account?.login ?? payload?.account?.login ?? null;
   const account_type = payload?.installation?.account?.type ?? payload?.account?.type ?? null;
   if (event === "installation") {
