@@ -106,6 +106,23 @@ function validOutput(output) {
     || (output.job === undefined && output.more === false && typeof output.failed === "string");
 }
 
+// Persisted queue-head states (the schema stays compatible across deployments):
+// - Ready: protocol=1, no callId/submitting/paused. POST is allowed.
+// - Submitting: submitting=true, no callId. Persisted BEFORE POST; after a
+//   restart this is an unknown outcome, so pause rather than repeat the POST.
+// - Waiting: callId exists. Only GET/poll that call; never submit it again.
+// - Paused: paused=true. Keep the head and tail until recovery. A known callId
+//   can resume polling on enqueue or operator recovery. Without one, an operator
+//   must identify the original call before supplying its id; polling proves the
+//   id is accessible, not that it belongs to this particular queued submission.
+// Old heads without protocol=1 are also ambiguous and pause without submission.
+//
+// Transitions: Ready -> Submitting -> Waiting -> next step or dequeue.
+// A documented pre-queue refusal may return Submitting -> Ready (bounded retry).
+// A terminal failed execution may return Waiting -> Ready with the same input;
+// a transient poll failure stays Waiting. Limits or malformed completed output
+// pause the head. A valid terminal guest failure dequeues it without replay.
+// Save re-reads the tail after network I/O to preserve concurrently enqueued work.
 /** One HTTP request per alarm; accepted call ids survive restarts and retries. */
 export function driver({ storage, execution, log = () => {}, note = async () => {}, now = Date.now }) {
   // Re-read after I/O so a request enqueued during a call stays behind its head.

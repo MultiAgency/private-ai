@@ -25,3 +25,15 @@ test("model options survive workflow generation without allowing YAML injection"
   assert.match(yaml, /allow-unpatched-model: "true"/);
   assert.doesNotMatch(workflow({ model: "vendor/model\nmalicious: true" }), /malicious:/);
 });
+
+test("PR reviews share cancellation groups while manual setup runs remain independent", () => {
+  const line = workflow().split('\n').find(line => line.trim().startsWith('group:'));
+  const expression = line.match(/\$\{\{ (.+) \}\}/)[1];
+  const group = new Function('github', `return (${expression});`);
+  const pr = run_id => ({ run_id, event: { pull_request: { number: 7 }, issue: {} } });
+  const comment = { run_id: 3, event: { pull_request: {}, issue: { number: 7 } } };
+  const manual = run_id => ({ run_id, event: { pull_request: {}, issue: {} } });
+  assert.equal(group(pr(1)), group(pr(2)));
+  assert.equal(group(pr(1)), group(comment));
+  assert.notEqual(group(manual(1)), group(manual(2)));
+});
