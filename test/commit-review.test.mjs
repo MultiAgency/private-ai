@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { commitChange, commitCheck, main, systemPrompt, userPrompt, validateCommitCheck } from '../review/review.mjs';
 import { github } from '../review/github.mjs';
@@ -313,10 +314,13 @@ test('Action distinguishes explicit PRs from event defaults and retains both rep
   assert.doesNotMatch(prInput, /default:/, 'the event number must not become an explicit conflicting PR');
   assert.match(action, /PR_NUMBER: \$\{\{ inputs.pr \}\}/);
   assert.match(action, /PR_NUMBER_DEFAULT: \$\{\{ github.event.pull_request.number \|\| github.event.issue.number \}\}/);
-  assert.match(action, /--review "\$RUNNER_TEMP\/private-review.json"/);
-  for (const path of ['private-review-receipt.json', 'private-review.json']) {
-    const upload = action.slice(action.lastIndexOf('- if: always()', action.indexOf(('path: ${{ runner.temp }}/' + path))));
-    assert.ok(upload.includes(('path: ${{ runner.temp }}/' + path)));
+  assert.match(action, /--receipt "\$REVIEW_RECEIPT_PATH" --review "\$REVIEW_REPORT_PATH"/);
+  for (const [output, variable] of [['receipt', 'REVIEW_RECEIPT_PATH'], ['report', 'REVIEW_REPORT_PATH']]) {
+    assert.ok(action.includes(variable + ': ${{ steps.review-files.outputs.' + output + ' }}'));
+    const path = 'path: ${{ steps.review-files.outputs.' + output + ' }}';
+    const upload = action.slice(action.lastIndexOf('- if:', action.indexOf(path)), action.indexOf(path) + path.length);
+    assert.ok(upload.includes("always() && steps.review-files.outcome == 'success'"));
+    assert.ok(upload.includes(path));
   }
 });
 
@@ -325,4 +329,40 @@ test('a report cannot overwrite its receipt', async t => {
   const w = workflow(t);
   await assert.rejects(w.run(['--commit', 'feature', '--review', w.receiptPath]), /paths must be different/);
   assert.deepEqual(w.events, []);
+});
+
+
+test('each Action invocation owns fresh files and unique unarchived artifact names', async t => {
+  const action = readFileSync(new URL('../review/action.yml', import.meta.url), 'utf8');
+  const setup = action.match(/    - id: review-files\n      shell: bash\n      run: \|\n((?:        .*\n)+)/);
+  assert.ok(setup, 'reserve per-invocation outputs before running the reviewer');
+  const script = setup[1].split('\n').map(line => line.slice(8)).join('\n');
+  const root = mkdtempSync(join(tmpdir(), 'action outputs '));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  function invocation() {
+    const output = join(root, `outputs-${counter++}`);
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script], { env: { ...process.env, RUNNER_TEMP: root, GITHUB_OUTPUT: output }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    const paths = Object.fromEntries(readFileSync(output, 'utf8').trim().split('\n').map(line => { const at = line.indexOf('='); return [line.slice(0, at), line.slice(at + 1)]; }));
+    assert.ok(paths.receipt && paths.report);
+    assert.notEqual(paths.receipt, paths.report);
+    return paths;
+  }
+  let counter = 0;
+  const first = invocation(), second = invocation(), third = invocation();
+  let fail = false;
+  const w = workflow(t, { check: async () => { if (fail) throw new Error('Fixture publishing permission denied'); return { id: 123 }; } });
+  const run = paths => w.run(['--commit', 'feature', '--receipt', paths.receipt, '--review', paths.report]);
+  await run(first);
+  const original = [readFileSync(first.receipt, 'utf8'), readFileSync(first.report, 'utf8')];
+  fail = true;
+  await assert.rejects(run(second), /Fixture publishing permission denied/);
+  assert.equal(existsSync(second.receipt), false);
+  assert.equal(existsSync(second.report), false);
+  assert.deepEqual([readFileSync(first.receipt, 'utf8'), readFileSync(first.report, 'utf8')], original);
+  fail = false;
+  await run(third);
+  // With archive:false, upload-artifact ignores name: and uses the basename.
+  const names = [first, second, third].flatMap(paths => Object.values(paths).map(path => path.split('/').at(-1)));
+  assert.equal(new Set(names).size, 6);
 });

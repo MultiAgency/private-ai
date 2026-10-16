@@ -77,7 +77,7 @@ The complete check report is saved as `private-review.json` before publishing
 or checking GitHub's output-size limit. `--review path.json` chooses another
 path, including for dry-runs. This file contains findings and may include code;
 it is separate from the receipt, which contains hashes rather than findings.
-The Action retains it as a separate report artifact even if publishing fails.
+The Action retains it as a separate, uniquely named `private-review.<id>.json` report artifact even if publishing fails. Each invocation uses its own output directory, so a failed invocation cannot reuse an earlier report or receipt. CLI filenames remain unchanged.
 An oversized report is saved in full and the check fails; no partial findings
 are published. With PR reviews, `--review` also saves the report when supplied.
 `--receipt path.json` selects the receipt file. Ordinary user/OAuth tokens cannot
@@ -221,7 +221,8 @@ jobs:
           nearai-api-key: ${{ secrets.NEARAI_API_KEY }}
 ```
 
-The receipt is uploaded as the run's `private-review-receipt.json` artifact,
+The Action uploads each invocation’s receipt as a uniquely named
+`private-review.<id>-receipt.json` artifact,
 which downloads as that file, ready for the page's checker. It names the pull
 request and commits it reviewed; what ties it to the review is the hash the
 review quotes, so check that the two match.
