@@ -4,6 +4,7 @@
 import { provenClaims, verifyReceipt } from "../core/receipt.mjs";
 import published from "../app/builds.json" with { type: "json" };
 import review from "../review/review.json" with { type: "json" };
+import { workflow } from "./workflow.mjs";
 
 const $ = selector => document.querySelector(selector);
 const escape = text => String(text).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
@@ -18,82 +19,8 @@ fetch("https://api.github.com/repos/MultiAgency/private-ai/commits/main", { head
   .then(sha => { if (/^[0-9a-f]{40}$/.test(sha)) { actionRef = sha; render(); } })
   .catch(() => {});
 
-const pinned = path => `MultiAgency/private-ai/${path}@${actionRef}${actionRef === "main" ? "" : ` # ${actionRef.slice(0, 7)}`}`;
-
 const DEFAULT_MODEL = review.defaults.model;
-
-// A model id is a short path; anything else is left out (and the form says so).
 const modelId = model => /^[\w.:-]+\/[\w.:-]+$/.test(model);
-
-// The review step's inputs: the key, and the model and policy when they differ
-// from the defaults.
-function inputs({ model, unpatched }) {
-  const lines = ["nearai-api-key: \${{ secrets.NEARAI_API_KEY }}"];
-  if (modelId(model) && model !== DEFAULT_MODEL) lines.push(`model: ${model}`);
-  if (unpatched) lines.push('allow-unpatched-model: "true"');
-  return lines.map(line => `\n          ${line}`).join("");
-}
-
-const reviewJob = (options, condition = "") => `
-  review:${condition}
-    runs-on: ubuntu-latest
-    concurrency:
-      group: private-review-\${{ github.event.pull_request.number || github.event.issue.number }}
-      cancel-in-progress: true
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
-    steps:
-      - uses: ${pinned("review")}
-        with:${inputs(options)}`;
-
-// With /review, a gate job of its own decides first: a refused comment never
-// starts the review job, so it can't load the key or cancel a review in progress.
-const gatedJobs = options => `
-  gate:
-    if: >-
-      github.event_name == 'workflow_dispatch'
-      || (github.event_name == 'pull_request'
-        && github.event.pull_request.head.repo.full_name == github.repository
-        && !github.event.pull_request.draft)
-      || (github.event_name == 'issue_comment'
-        && github.event.issue.pull_request
-        && startsWith(github.event.comment.body, '/review')
-        && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      allowed: \${{ steps.gate.outputs.allowed }}
-    steps:
-      - id: gate
-        uses: ${pinned("review/gate")}
-${reviewJob(options, `
-    needs: gate
-    if: needs.gate.outputs.allowed == 'true'`)}`;
-
-function workflow({ forks, ...options }) {
-  return `name: private-review
-
-# Private AI review: the model reads this pull request only inside a NEAR AI
-# Cloud enclave, end-to-end encrypted. See https://github.com/MultiAgency/private-ai
-on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
-  # Run by hand (Actions tab, Run workflow) to check the setup: no code is read.
-  workflow_dispatch:${forks ? `
-  issue_comment:
-    types: [created]` : ""}
-
-jobs:${forks ? gatedJobs(options) : reviewJob(options, `
-    # A fork's pull request gets no secrets, so it can't be reviewed here.
-    if: >-
-      github.event_name == 'workflow_dispatch'
-      || (!github.event.pull_request.draft
-        && github.event.pull_request.head.repo.full_name == github.repository)`)}
-`;
-}
 
 function render() {
   const [owner, name] = $("#repo").value.trim().replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "").split("/");
@@ -101,7 +28,7 @@ function render() {
   const repo = valid ? `${owner}/${name}` : "OWNER/REPO";
   const branch = $("#branch").value.trim() || "main";
   const model = $("#model").value.trim() || DEFAULT_MODEL;
-  const yaml = workflow({ forks: $("#forks").checked, model, unpatched: $("#unpatched").checked });
+  const yaml = workflow({ forks: $("#forks").checked, model, unpatched: $("#unpatched").checked, ref: actionRef });
   $("#repo-error").hidden = valid || !$("#repo").value.trim();
   $("#model-error").hidden = modelId(model);
 

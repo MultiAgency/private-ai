@@ -42,12 +42,13 @@ export function github(token, repo) {
       }
     },
 
-    /** A user's role on the repository: admin, maintain, write, triage, read or none. */
-    async role(login) {
+    /** Effective base permission decides access; the assigned role is a display label. */
+    async access(login) {
       try {
-        return (await send("GET", `/collaborators/${encodeURIComponent(login)}/permission`).then(r => r.json())).role_name;
+        const access = await send("GET", `/collaborators/${encodeURIComponent(login)}/permission`).then(r => r.json());
+        return { permission: access?.permission, role: access?.role_name || access?.permission || "unknown" };
       } catch (error) {
-        if (error.status === 404) return "none";
+        if (error.status === 404) return { permission: "none", role: "none" };
         throw error;
       }
     },
