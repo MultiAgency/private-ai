@@ -54,7 +54,8 @@ export function github(token, repo) {
     },
 
     commit: ref => send("GET", `/commits/${encodeURIComponent(ref)}`).then(r => r.json()),
-    check: body => send("POST", "/check-runs", { body }),
+    check: body => send("POST", "/check-runs", { body }).then(r => r.json()),
+    updateCheck: (id, body) => send("PATCH", `/check-runs/${id}`, { body }),
 
     compare: (base, head) => send("GET", `/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`).then(r => r.json()),
 

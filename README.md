@@ -67,13 +67,21 @@ Use `GITHUB_TOKEN` and `NEARAI_API_KEY` as for PR reviews. Posting needs
 `contents: read` and `checks: write` with an installation token (including the
 workflow's `github.token`). Findings and the receipt hash appear in an
 informational Private Investigator check on the resolved head SHA. The receipt
-records the repository and exact base/head SHAs. `--dry-run` saves output without
-posting; `--receipt` selects its path.
+records the repository and exact base/head SHAs. A running check is created
+before model credits are spent; a failed review marks it as failed. A completed
+review is neutral, even when findings exist: it is informational.
+
+`--dry-run` previews the check without publishing and works with a read-only
+token. It still runs the model review and spends model credits.
+`--review path.json` saves that preview instead of printing it.
+`--receipt path.json` selects the receipt file. Ordinary user/OAuth tokens cannot
+publish checks; for local use, choose a GitHub App installation token or dry-run.
 
 A single commit is compared to its first parent, including merge commits.
 Ranges require the base to be an ancestor of the head; resolve a merge base
 explicitly for diverged branches. Root commits and comparisons reaching GitHub's
-300-file limit are refused. Rubric files come from the resolved base revision.
+300-file limit are refused; empty ranges stop without spending model credits.
+Rubric files come from the resolved base revision.
 
 For a manual Action workflow, use explicit inputs (replace the pin with the
 feature's released commit SHA):

@@ -1,13 +1,16 @@
 name: Private Investigator
 description: >-
-  Reviews a pull request with a model inside a NEAR AI Cloud enclave, end-to-end
-  encrypted, and posts the review with proof of where the code was read.
+  Reviews a pull request, commit, or ancestor-to-head range with a model inside
+  a NEAR AI Cloud enclave, end-to-end encrypted, and posts the review with proof
+  of where the code was read.
 inputs:
   nearai-api-key:
     description: NEAR AI Cloud API key.
     required: true
   github-token:
-    description: Token that reads the pull request and posts the review.
+    description: >-
+      Token that reads code and posts the review. Commit reviews need checks:write
+      on a GitHub App token.
     default: ${{ github.token }}
   pr:
     description: Pull request number.
