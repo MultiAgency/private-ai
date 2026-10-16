@@ -1,17 +1,25 @@
 name: Private Investigator
 description: >-
-  Reviews a pull request with a model inside a NEAR AI Cloud enclave, end-to-end
-  encrypted, and posts the review with proof of where the code was read.
+  Reviews a pull request, commit, or ancestor-to-head range with a model inside
+  a NEAR AI Cloud enclave, end-to-end encrypted, and posts the review with proof
+  of where the code was read.
 inputs:
   nearai-api-key:
     description: NEAR AI Cloud API key.
     required: true
   github-token:
-    description: Token that reads the pull request and posts the review.
+    description: >-
+      Token that reads code and posts the review. Commit reviews need checks:write
+      on a GitHub App token.
     default: ${{ github.token }}
   pr:
-    description: Pull request number.
-    default: ${{ github.event.pull_request.number || github.event.issue.number }}
+    description: Pull request number. Defaults to the event's PR when no commit or range is supplied.
+  commit:
+    description: Commit to review against its first parent; mutually exclusive with pr and base/head.
+  base:
+    description: Ancestor revision for a commit range; requires head.
+  head:
+    description: Head revision for a commit range; requires base.
   rubric:
     description: Comma-separated review instruction files, read from the base commit. Missing files are skipped.
     default: REVIEW.md,AGENTS.md
@@ -35,6 +43,17 @@ inputs:
 runs:
   using: composite
   steps:
+    # Reserve outputs before setup: a failed invocation must never upload files
+    # left by an earlier invocation in the same job. Filenames also identify
+    # unarchived artifacts, so they must be unique across jobs and invocations.
+    - id: review-files
+      shell: bash
+      run: |
+        output_dir="$(mktemp -d "$RUNNER_TEMP/private-review.XXXXXXXXXXXX")"
+        output_id="${output_dir##*/}"
+        printf 'receipt=%s/%s-receipt.json\n' "$output_dir" "$output_id" >> "$GITHUB_OUTPUT"
+        printf 'report=%s/%s.json\n' "$output_dir" "$output_id" >> "$GITHUB_OUTPUT"
+
     - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: 22
@@ -47,17 +66,32 @@ runs:
         NEARAI_API_KEY: ${{ inputs.nearai-api-key }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ inputs.pr }}
+        PR_NUMBER_DEFAULT: ${{ github.event.pull_request.number || github.event.issue.number }}
+        REVIEW_COMMIT: ${{ inputs.commit }}
+        REVIEW_BASE: ${{ inputs.base }}
+        REVIEW_HEAD: ${{ inputs.head }}
         RUBRIC: ${{ inputs.rubric }}
         MODEL: ${{ inputs.model }}
         ALLOW_UNPATCHED_MODEL: ${{ inputs.allow-unpatched-model }}
         PASSES: ${{ inputs.passes }}
-      run: node "$GITHUB_ACTION_PATH/review.mjs" --receipt "$RUNNER_TEMP/private-review-receipt.json"
+        REVIEW_RECEIPT_PATH: ${{ steps.review-files.outputs.receipt }}
+        REVIEW_REPORT_PATH: ${{ steps.review-files.outputs.report }}
+      run: node "$GITHUB_ACTION_PATH/review.mjs" --receipt "$REVIEW_RECEIPT_PATH" --review "$REVIEW_REPORT_PATH"
 
-    - if: always()
+    - if: ${{ always() && steps.review-files.outcome == 'success' }}
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        path: ${{ runner.temp }}/private-review-receipt.json
+        path: ${{ steps.review-files.outputs.receipt }}
         # The receipt downloads as the .json file itself, ready for the page's
         # checker, not as a zip. Unarchived, the artifact takes the file's name.
+        archive: false
+        if-no-files-found: ignore
+
+    # Keep the full report independently of the receipt, including when GitHub
+    # refuses an oversized check or publishing fails. Reports may contain code.
+    - if: ${{ always() && steps.review-files.outcome == 'success' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        path: ${{ steps.review-files.outputs.report }}
         archive: false
         if-no-files-found: ignore

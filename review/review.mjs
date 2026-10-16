@@ -8,7 +8,9 @@
 //   3. post     one pull request review, ending with what was verified, and a
 //               receipt anyone can re-check with verify.mjs
 //
-// Usage: node review.mjs --repo owner/name --pr N [--dry-run [--review path] [--head sha]] [--receipt path]
+// Usage: node review.mjs --repo owner/name --commit REF [--dry-run] [--receipt path]
+//        node review.mjs --repo owner/name --base REF --head REF [--dry-run]
+//        node review.mjs --repo owner/name --pr N [--dry-run [--review path] [--head sha]] [--receipt path]
 //        node review.mjs --repo owner/name --check   (also when the workflow is run by hand)
 // --head reviews an earlier commit of the pull request, as it was then, without
 // its earlier findings: the page's sample pins one this way.
@@ -75,8 +77,12 @@ export function commentableLines(files) {
   return lines;
 }
 
-export function systemPrompt(rubric) {
-  return spec.system_prompt.replace("{rubric}", () => rubric);
+export function systemPrompt(rubric, { standalone = false } = {}) {
+  // Adapt the template before inserting repository instructions verbatim.
+  const template = standalone
+    ? spec.system_prompt.replaceAll("pull request", "change").replace("base branch", "base revision")
+    : spec.system_prompt;
+  return template.replace("{rubric}", () => rubric);
 }
 
 export function userPrompt(pr, files, earlier = []) {
@@ -88,7 +94,7 @@ export function userPrompt(pr, files, earlier = []) {
     budget -= f.patch.length;
     return `${header}\n\`\`\`diff\n${f.patch}\n\`\`\``;
   });
-  return `Pull request #${pr.number}: ${pr.title}
+  return `${pr.number ? `Pull request #${pr.number}` : "Commit range"}: ${pr.title}
 Base: ${pr.base.ref} (${pr.base.sha}). Head: ${pr.head.ref} (${pr.head.sha}).
 
 ## Description
@@ -180,7 +186,7 @@ export async function reviewChange({ client, model, publicKey, pr, files, rubric
     client,
     model,
     publicKey,
-    system: systemPrompt(rubric),
+    system: systemPrompt(rubric, { standalone: !pr.number }),
     prompt: userPrompt(pr, files, earlier),
     tools: definitions,
     call: tools(root),
@@ -200,6 +206,49 @@ export function mergeFindings(lists) {
   return lists.flat().filter(f => !seen.has(`${f.path}:${f.line}`) && seen.add(`${f.path}:${f.line}`));
 }
 
+/** Resolve refs once; reject comparisons whose API diff would omit changes. */
+export async function commitChange(gh, { commit, base, head }) {
+  if (commit && (base || head)) throw new Error("Use --commit or --base with --head, not both");
+  if (!commit && (!base || !head)) throw new Error("A range requires both --base and --head");
+  const target = await gh.commit(commit || head);
+  const baseRef = commit ? target.parents?.[0]?.sha : base;
+  if (!baseRef) throw new Error("Root commits are not supported; choose a range with an existing base");
+  const source = await gh.commit(baseRef);
+  const comparison = await gh.compare(source.sha, target.sha);
+  if (comparison.merge_base_commit?.sha !== source.sha) {
+    throw new Error("The base must be an ancestor of the head; choose their merge base explicitly");
+  }
+  // GitHub returns at most 300 files and does not paginate this list.
+  if (!Array.isArray(comparison.files) || comparison.files.length >= 300) {
+    throw new Error("Comparison may be truncated (300-file GitHub limit); review smaller ranges");
+  }
+  return {
+    title: commit ? `Commit ${target.sha}` : `${source.sha}..${target.sha}`,
+    body: target.commit.message,
+    base: { ref: source.sha, sha: source.sha },
+    head: { ref: target.sha, sha: target.sha },
+    files: comparison.files,
+  };
+}
+
+/** Checks are informational: a clean AI review is never an approval. */
+export function commitCheck(pr, posted, runUrl) {
+  const findings = posted.comments.map(c => `- \`${c.path}:${c.line}\` ${c.body}`).join("\n");
+  const summary = `${pr.base.sha}..${pr.head.sha}\n\n${posted.body}${findings ? `\n\n**Findings on changed lines**\n${findings}` : ""}`;
+  return {
+    name: NAME, head_sha: pr.head.sha, status: "completed", conclusion: "neutral",
+    ...(runUrl ? { details_url: runUrl } : {}),
+    output: { title: "Commit review", summary },
+  };
+}
+
+/** Validate only after saving the complete report, so a publishing limit loses no findings. */
+export function validateCommitCheck(check) {
+  if (Buffer.byteLength(check.output.summary, "utf8") > 65000) {
+    throw new Error("Review exceeds GitHub's check output limit; full report saved, no findings posted");
+  }
+}
+
 async function loadRubric(gh, ref, paths) {
   const parts = [];
   for (const path of paths) {
@@ -209,11 +258,44 @@ async function loadRubric(gh, ref, paths) {
   return parts.join("\n\n") || DEFAULT_RUBRIC;
 }
 
-async function main() {
+/** Resolve CLI/Action target precedence without contacting a service. */
+export function resolveReviewTarget(values, environment) {
+  const commit = values.commit || environment.REVIEW_COMMIT;
+  const base = values.base || environment.REVIEW_BASE;
+  const head = values.head || environment.REVIEW_HEAD;
+  const requestedPr = values.pr || environment.PR_NUMBER;
+  const defaultPr = environment.PR_NUMBER_DEFAULT;
+  // Action head/base/commit inputs select standalone reviews, even on PR events.
+  // CLI --head with a PR retains the historical PR dry-run path.
+  const explicitStandalone = Boolean(commit || base || environment.REVIEW_HEAD);
+  const historicalHead = !explicitStandalone && (requestedPr || defaultPr) ? values.head : undefined;
+  const standalone = explicitStandalone || Boolean(head && !historicalHead);
+  if (standalone && requestedPr) throw new Error("Choose a PR or a commit/range");
+  if (standalone && commit && (base || head)) throw new Error("Use --commit or --base with --head, not both");
+  if (standalone && !commit && (!base || !head)) throw new Error("A range requires both --base and --head");
+  if (values.check && (standalone || values.pr || values.head)) throw new Error("--check cannot be combined with a review target");
+  const pr = requestedPr || (!standalone && defaultPr);
+  if (values.check || (environment.GITHUB_EVENT_NAME === "workflow_dispatch" && !standalone && !pr)) return { kind: "setup" };
+  if (standalone) return commit ? { kind: "commit", commit } : { kind: "range", base, head };
+  if (!pr) throw new Error("PR_NUMBER is required");
+  const number = Number(pr);
+  if (!Number.isSafeInteger(number) || number <= 0) throw new Error("PR number must be a positive integer");
+  return { kind: "pr", number, ...(historicalHead && { historicalHead }) };
+}
+
+export async function main(args = process.argv.slice(2), environment = process.env, dependencies = {}) {
+  const {
+    github: connectGithub = github, nearai: connectModel = nearai,
+    attest: attestModel = attest, reviewChange: runReview = reviewChange,
+    unpack: unpackHead = unpack, log = console.log,
+  } = dependencies;
   const { values } = parseArgs({
+    args,
     options: {
       repo: { type: "string" },
       pr: { type: "string" },
+      commit: { type: "string" },
+      base: { type: "string" },
       "dry-run": { type: "boolean" },
       head: { type: "string" },
       check: { type: "boolean" },
@@ -222,86 +304,125 @@ async function main() {
     },
   });
   const env = name => {
-    if (!process.env[name]) throw new Error(`${name} is required`);
-    return process.env[name];
+    if (!environment[name]) throw new Error(`${name} is required`);
+    return environment[name];
   };
   const repo = values.repo ?? env("GITHUB_REPOSITORY");
   const dryRun = values["dry-run"] ?? false;
   const receiptPath = resolve(values.receipt ?? "private-review-receipt.json");
-  const model = process.env.MODEL || spec.defaults.model;
-  const rubricPaths = (process.env.RUBRIC || spec.defaults.rubric.join(",")).split(",").map(p => p.trim()).filter(Boolean);
-  const maxTurns = Number(process.env.MAX_TURNS || spec.defaults.max_turns);
-  const passes = Number(process.env.PASSES || spec.defaults.passes);
-  const allowUnpatchedModel = process.env.ALLOW_UNPATCHED_MODEL === "true";
-  if (!Number.isInteger(passes) || passes < 1 || passes > 5) throw new Error(`PASSES must be 1 to 5, not ${process.env.PASSES}`);
-  const gh = github(env("GITHUB_TOKEN"), repo);
-  const client = nearai(env("NEARAI_API_KEY"));
+  const model = environment.MODEL || spec.defaults.model;
+  const rubricPaths = (environment.RUBRIC || spec.defaults.rubric.join(",")).split(",").map(p => p.trim()).filter(Boolean);
+  const maxTurns = Number(environment.MAX_TURNS || spec.defaults.max_turns);
+  const passes = Number(environment.PASSES || spec.defaults.passes);
+  const allowUnpatchedModel = environment.ALLOW_UNPATCHED_MODEL === "true";
+  if (!Number.isInteger(passes) || passes < 1 || passes > 5) throw new Error(`PASSES must be 1 to 5, not ${environment.PASSES}`);
+  const target = resolveReviewTarget(values, environment);
+  const standalone = target.kind === "commit" || target.kind === "range";
+  const number = target.kind === "pr" ? target.number : null;
+  const reviewPath = values.review ? resolve(values.review) : standalone ? resolve("private-review.json") : null;
+  if (reviewPath === receiptPath) throw new Error("Review and receipt paths must be different");
+  const gh = connectGithub(env("GITHUB_TOKEN"), repo);
+  const client = connectModel(env("NEARAI_API_KEY"));
 
-  if (values.check || process.env.GITHUB_EVENT_NAME === "workflow_dispatch") {
+  if (target.kind === "setup") {
     if (!report(await checkSetup({ client, gh, model, allowUnpatchedModel }))) process.exitCode = 1;
     return;
   }
-  const number = Number(values.pr ?? env("PR_NUMBER"));
 
   // The backstop for workflows without the review/gate job ahead of this one.
-  const starter = await reviewStarter(commentEvent(), gh);
+  const starter = await reviewStarter(commentEvent(environment), gh);
   if (starter && !starter.allowed) {
-    console.log(`::notice::${refusal(starter)}`);
+    log(`::notice::${refusal(starter)}`);
     return;
   }
 
+  const runUrl = environment.GITHUB_RUN_ID && environment.GITHUB_REPOSITORY &&
+    `${environment.GITHUB_SERVER_URL || "https://github.com"}/${environment.GITHUB_REPOSITORY}/actions/runs/${environment.GITHUB_RUN_ID}`;
+  let checkId;
+  let reviewSaved = false;
   try {
-    const pr = await gh.pull(number);
-    if (values.head) {
+    const pr = standalone ? await commitChange(gh, target) : await gh.pull(number);
+    if (target.historicalHead) {
       if (!dryRun) throw new Error("--head reviews an earlier commit, so it needs --dry-run");
-      const commits = await gh.compare(pr.base.ref, values.head);
-      Object.assign(pr, { base: { ...pr.base, sha: commits.merge_base_commit.sha }, head: { ...pr.head, sha: values.head }, files: commits.files });
+      const commits = await gh.compare(pr.base.ref, target.historicalHead);
+      Object.assign(pr, { base: { ...pr.base, sha: commits.merge_base_commit.sha }, head: { ...pr.head, sha: target.historicalHead }, files: commits.files });
+    }
+    if (standalone && !pr.files.length) throw new Error("No changed files in this range; no review was started");
+    if (standalone && !dryRun) {
+      // Verify publishing permissions before spending model credits, and leave
+      // an observable running check on the exact revision being reviewed.
+      const check = await gh.check({
+        name: NAME, head_sha: pr.head.sha, status: "in_progress",
+        ...(runUrl ? { details_url: runUrl } : {}),
+        output: { title: "Reviewing commit range", summary: `${pr.base.sha}..${pr.head.sha}` },
+      });
+      if (!Number.isInteger(check.id)) throw new Error("GitHub did not return a check run id");
+      checkId = check.id;
     }
     const [files, rubric, tarball, earlier] = await Promise.all([
       pr.files ?? gh.files(number),
       loadRubric(gh, pr.base.sha, rubricPaths),
       gh.tarball(pr.head.sha),
-      values.head ? [] : earlierFindings(gh, number),
+      standalone || target.historicalHead ? [] : earlierFindings(gh, number),
     ]);
-    console.log(`#${number}: ${files.length} files changed, ${earlier.length} earlier findings; head ${pr.head.sha}`);
+    log(`${standalone ? "commit range" : `#${number}`}: ${files.length} files changed, ${earlier.length} earlier findings; head ${pr.head.sha}`);
 
-    const { evidence, attestation } = await attest(client, model, { allowUnpatchedModel })
+    const { evidence, attestation } = await attestModel(client, model, { allowUnpatchedModel })
       .catch(error => { throw new Error(`attestation failed, so no code was sent: ${modelProblem(model, error)}`); });
-    console.log(`attested: model TCB ${attestation.model.tcb}, gateway TCB ${attestation.gateway.tcb}, signer ${attestation.model.signer}`);
+    log(`attested: model TCB ${attestation.model.tcb}, gateway TCB ${attestation.gateway.tcb}, signer ${attestation.model.signer}`);
 
-    const head = unpack(tarball);
+    const head = unpackHead(tarball);
     let result;
     try {
-      result = await reviewChange({
-        client, model, publicKey: attestation.model.publicKey, pr, files, rubric, root: head.root, maxTurns, earlier, passes, log: console.log,
+      result = await runReview({
+        client, model, publicKey: attestation.model.publicKey, pr, files, rubric, root: head.root, maxTurns, earlier, passes, log,
       });
     } finally {
       head.remove();
     }
-    console.log(`reviewed: ${result.review.findings.length} findings in ${result.turns.length} signed turns`);
+    log(`reviewed: ${result.review.findings.length} findings in ${result.turns.length} signed turns`);
 
     const { text, sha256: receiptSha256 } = receipt({
-      subject: { pull_request: `${repo}#${number}`, base_sha: pr.base.sha, head_sha: pr.head.sha },
+      subject: { ...(standalone ? { repository: repo } : { pull_request: `${repo}#${number}` }), base_sha: pr.base.sha, head_sha: pr.head.sha },
       model,
       evidence,
       turns: result.turns,
     });
     writeFileSync(receiptPath, text);
-    console.log(`receipt: ${receiptPath} sha256 ${receiptSha256}`);
+    log(`receipt: ${receiptPath} sha256 ${receiptSha256}`);
 
-    const runUrl = process.env.GITHUB_RUN_ID &&
-      `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
     const posted = renderReview({ review: result.review, turns: result.turns, attestation, model, receiptSha256, runUrl, commentable: commentableLines(files) });
+    const output = standalone ? commitCheck(pr, posted, runUrl) : posted;
+    // Keep every finding before validation or network writes. The receipt
+    // contains hashes, so it cannot recover a report that fails to publish.
+    if (reviewPath) {
+      writeFileSync(reviewPath, `${JSON.stringify(output, null, 2)}\n`, { mode: 0o600 });
+      reviewSaved = true;
+      log(`review: ${reviewPath}`);
+    }
+    if (standalone) validateCommitCheck(output);
     if (dryRun) {
-      // --review keeps what would have been posted, e.g. as the page's sample.
-      if (values.review) writeFileSync(resolve(values.review), `${JSON.stringify(posted, null, 2)}\n`);
-      else console.log(JSON.stringify(posted, null, 2));
+      if (!values.review) log(JSON.stringify(output, null, 2));
+      return;
+    }
+    if (standalone) {
+      await gh.updateCheck(checkId, { status: output.status, conclusion: output.conclusion, output: output.output });
+      log("posted: commit check");
       return;
     }
     await gh.review(number, { commit_id: pr.head.sha, event: "COMMENT", ...posted });
-    console.log(`posted: ${posted.comments.length} inline comments`);
+    log(`posted: ${posted.comments.length} inline comments`);
   } catch (error) {
-    if (!dryRun) await gh.comment(number, `**${NAME} stopped:** ${error.message}. No code was posted anywhere else. Re-run the job to try again; if it keeps stopping, the run's log names the step.`).catch(() => {});
+    if (checkId !== undefined) await gh.updateCheck(checkId, {
+      status: "completed", conclusion: "failure",
+      output: {
+        title: "Review stopped",
+        summary: reviewSaved
+          ? "Publishing the review failed. The complete report and receipt were saved by the runner; check the workflow artifacts or local files before trying again."
+          : "The review did not complete. Check the review runner's log before trying again.",
+      },
+    }).catch(() => {});
+    if (!dryRun && !standalone) await gh.comment(number, `**${NAME} stopped:** ${error.message}. No code was posted anywhere else. Re-run the job to try again; if it keeps stopping, the run's log names the step.`).catch(() => {});
     throw error;
   }
 }
