@@ -365,6 +365,7 @@ impl Job {
 /// the event, which the relay could alter). Drafts and closed pull requests are skipped.
 /// Returns the job id the request belongs to (a new one, or the job already
 /// handling this exact request) with the run's outcome.
+#[allow(clippy::too_many_arguments)]
 pub fn start(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, installation: u64, repo: &str, number: u64, settings: &Settings) -> Result<(String, Step)> {
     let pr = forge.pull(number)?;
     if pr["state"] != "open" || pr["draft"] == true {
