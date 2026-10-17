@@ -235,7 +235,7 @@ that work on private data with AI, and prove where the data went.
 - [`core/`](core/): what every service shares, in Node and in the browser alike.
 - [`site/`](site/): [the page](https://multiagency.github.io/private-ai/), which
   sets a repository up, shows a real review, and checks receipts in the browser.
-- [`eval/`](eval/): the quality measurements.
+- [`eval/`](eval/): the quality measurements, and [how to add a case](eval/README.md).
 
 Questions and bugs: [open an issue](https://github.com/MultiAgency/private-ai/issues).
 
