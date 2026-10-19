@@ -1,6 +1,7 @@
 node_modules/
 .env
 *-receipt.json
+/private-review.json
 !site/sample-receipt.json
 _site/
 eval/feedback/

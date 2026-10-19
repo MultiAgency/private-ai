@@ -53,6 +53,77 @@ same review the App and the Action run:
 New cases and models are measured before any claim here changes. React 👍 or
 👎 on a finding: that is how it is measured on real code.
 
+## Review a commit or range without a PR
+
+The CLI and GitHub Action also accept explicit commit reviews. The hosted App
+still uses `/review` on PRs; it does not review standalone commits yet.
+
+```sh
+node review/review.mjs --repo owner/repo --commit COMMIT_SHA
+node review/review.mjs --repo owner/repo --base BASE_REF --head HEAD_REF
+```
+
+Use `GITHUB_TOKEN` and `NEARAI_API_KEY` as for PR reviews. Posting needs
+`contents: read` and `checks: write` with an installation token (including the
+workflow's `github.token`). Findings and the receipt hash appear in an
+informational Private Investigator check on the resolved head SHA. The receipt
+records the repository and exact base/head SHAs. A running check is created
+before model credits are spent; a failed review marks it as failed. A completed
+review is neutral, even when findings exist: it is informational.
+
+`--dry-run` previews the check without publishing and works with a read-only
+token. It still runs the model review and spends model credits.
+The complete check report is saved as `private-review.json` before publishing
+or checking GitHub's output-size limit. `--review path.json` chooses another
+path, including for dry-runs. This file contains findings and may include code;
+it is separate from the receipt, which contains hashes rather than findings.
+The Action retains it as a separate, uniquely named `private-review.<id>.json` report artifact even if publishing fails. Each invocation uses its own output directory, so a failed invocation cannot reuse an earlier report or receipt. CLI filenames remain unchanged.
+An oversized report is saved in full and the check fails; no partial findings
+are published. With PR reviews, `--review` also saves the report when supplied.
+`--receipt path.json` selects the receipt file. Ordinary user/OAuth tokens cannot
+publish checks; for local use, choose a GitHub App installation token or dry-run.
+
+A single commit is compared to its first parent, including merge commits.
+Ranges require the base to be an ancestor of the head; resolve a merge base
+explicitly for diverged branches. Root commits and comparisons reaching GitHub's
+300-file limit are refused; empty ranges stop without spending model credits.
+Rubric files come from the resolved base revision.
+
+For a manual Action workflow, use explicit inputs (replace the pin with the
+feature's released commit SHA):
+
+```yaml
+name: Review commit range
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Ancestor revision
+        required: true
+      head:
+        description: Head revision
+        required: true
+permissions:
+  contents: read
+  checks: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: MultiAgency/private-ai/review@<commit sha>
+        with:
+          nearai-api-key: ${{ secrets.NEARAI_API_KEY }}
+          base: ${{ inputs.base }}
+          head: ${{ inputs.head }}
+```
+
+Alternatively pass `commit:` alone. Explicit commit/range inputs take precedence
+over the event's PR default. Explicitly combining them with `pr:` is rejected.
+With no commit/range inputs, PR and `/review` comment events keep reviewing the
+PR that triggered the workflow.
+Automatic push reviews are not enabled by this example. Existing PR re-reviews
+continue to check earlier findings and report those still open.
+
 ## Two ways to run it
 
 ### The GitHub App (zero setup)
@@ -150,7 +221,8 @@ jobs:
           nearai-api-key: ${{ secrets.NEARAI_API_KEY }}
 ```
 
-The receipt is uploaded as the run's `private-review-receipt.json` artifact,
+The Action uploads each invocation’s receipt as a uniquely named
+`private-review.<id>-receipt.json` artifact,
 which downloads as that file, ready for the page's checker. It names the pull
 request and commits it reviewed; what ties it to the review is the hash the
 review quotes, so check that the two match.
