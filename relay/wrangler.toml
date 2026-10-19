@@ -1,6 +1,10 @@
 # Private Investigator's webhook relay. Deploy: npx wrangler deploy (from relay/),
 # after `wrangler secret put WEBHOOK_SECRET`, `wrangler secret put PAYMENT_KEY`,
 # and `wrangler secret put STATS_SECRET` (gates GET /stats and /stats.json).
+# Optional: `wrangler secret put RECOVERY_SECRET` enables POST /recover with
+# x-recovery-key. Body: {installation, repo_id, pr, call_id?}. Resume a paused
+# known call, or attach a reconciled call id after an ambiguous submission.
+# It verifies the call using PAYMENT_KEY and never resubmits an execution.
 name = "private-investigator-relay"
 main = "worker.mjs"
 compatibility_date = "2026-10-01"

@@ -4,12 +4,18 @@ description: >-
   write access. Run it in a job of its own, without a concurrency group, ahead
   of the review job, so a refused comment can't cancel a review in progress.
 inputs:
+  allow-forks:
+    description: >-
+      Allow authorized /review commands on open, non-draft pull requests from
+      forks. Setting this input requires pull-requests: read on the gate job.
+      Omit it to preserve older workflows' role-only gate behavior.
+    default: ""
   github-token:
     description: Token that can read the repository's collaborator roles.
     default: ${{ github.token }}
 outputs:
   allowed:
-    description: "\"true\" for pull request events and for comments from someone with write access."
+    description: "\"true\" for pull request events and eligible /review comments from someone with write access."
     value: ${{ steps.gate.outputs.allowed }}
 runs:
   using: composite
@@ -22,4 +28,5 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github-token }}
+        ALLOW_FORKS: ${{ inputs.allow-forks }}
       run: node "$GITHUB_ACTION_PATH/../gate.mjs"

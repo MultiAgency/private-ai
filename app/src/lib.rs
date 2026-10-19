@@ -6,6 +6,7 @@ pub mod attest;
 pub mod doors;
 pub mod e2ee;
 pub mod failure;
+pub mod github_access;
 #[cfg(target_arch = "wasm32")]
 pub mod github;
 #[cfg(target_arch = "wasm32")]

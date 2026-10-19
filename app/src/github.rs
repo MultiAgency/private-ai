@@ -146,7 +146,7 @@ impl Repo {
             Err(e) if e.to_string().ends_with(": 404") => return Ok(false),
             Err(e) => return Err(e),
         };
-        Ok(matches!(permission["role_name"].as_str(), Some("admin" | "maintain" | "write")))
+        Ok(crate::github_access::may_review(&permission))
     }
 
     /// Creates a check run on the head commit, or updates one by id.
