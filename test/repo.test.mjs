@@ -59,3 +59,17 @@ test("bad input comes back as an error the model can read", () => {
     head.remove();
   }
 });
+
+test("a pattern that backtracks forever is cut off, and the next search still works", () => {
+  const head = unpack(tarball());
+  try {
+    writeFileSync(join(head.root, "line.txt"), `${"a".repeat(64)}!\n`);
+    const call = tools(head.root);
+    const started = Date.now();
+    assert.match(call("grep", { pattern: "^(a+)+$", path: "line.txt" }), /^error: that pattern took longer than \d+s/);
+    assert.ok(Date.now() - started < 15000);
+    assert.equal(call("grep", { pattern: "a - b" }), "src/add.js:1: export const add = (a, b) => a - b;");
+  } finally {
+    head.remove();
+  }
+});

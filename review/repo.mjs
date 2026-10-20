@@ -1,16 +1,24 @@
 // The pull request's head commit, unpacked to a temporary directory, and the
 // read-only tools the model uses on it. Nothing in it is ever executed, and no
 // path the model names may leave the directory, including through a symlink.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import spec from "./review.json" with { type: "json" };
 
 // Shared with the hosted App (app/), like the tool definitions below.
 const { max_file_bytes: MAX_FILE_BYTES, max_lines: MAX_LINES, max_matches: MAX_MATCHES, max_entries: MAX_ENTRIES } = spec.repo_limits;
 const SKIP_DIRS = new Set(spec.repo_limits.skip_dirs);
+
+// The model picks the pattern, and JavaScript's regex engine backtracks without
+// limit: `^(a+)+$` on a long line of a's never finishes. A grep runs in a child
+// process, killed after this long. (The hosted App's engine caps backtracking
+// itself, so this limit is the Action's alone.)
+const GREP_TIMEOUT_MS = 5000;
+const GREP_WORKER = fileURLToPath(new URL("./grep-worker.mjs", import.meta.url));
 
 export function unpack(tarball) {
   const dir = mkdtempSync(join(tmpdir(), "private-review-"));
@@ -25,7 +33,8 @@ export function unpack(tarball) {
 
 export const definitions = spec.repo_tools;
 
-export function tools(root) {
+// `guarded: false` is for the grep worker, which the timeout already bounds.
+export function tools(root, { guarded = true } = {}) {
   function inside(path = ".") {
     const target = resolve(root, path);
     const real = realpathSync(target);
@@ -88,8 +97,21 @@ export function tools(root) {
     },
   };
 
+  function guardedGrep(args) {
+    const child = spawnSync(process.execPath, [GREP_WORKER, root, JSON.stringify(args)], {
+      timeout: GREP_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+      maxBuffer: 16 * 1024 * 1024,
+      encoding: "utf8",
+    });
+    if (child.error?.code === "ETIMEDOUT") return `error: that pattern took longer than ${GREP_TIMEOUT_MS / 1000}s to search with; use a simpler one`;
+    if (child.error || child.status !== 0) return "error: the search failed; try a different pattern";
+    return child.stdout;
+  }
+
   return function call(name, args) {
     if (!Object.hasOwn(run, name)) return `unknown tool ${name}`;
+    if (name === "grep" && guarded) return guardedGrep(args ?? {});
     try {
       return run[name](args ?? {});
     } catch (error) {
