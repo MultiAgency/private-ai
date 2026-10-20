@@ -35,6 +35,20 @@ test("the head commit unpacks, and the tools read it with line numbers", () => {
   }
 });
 
+test("grep lists matches in path order, as the hosted App does, whatever order the disk gives", () => {
+  const head = unpack(tarball());
+  try {
+    mkdirSync(join(head.root, "a"));
+    writeFileSync(join(head.root, "a", "x.txt"), "needle\n");
+    writeFileSync(join(head.root, "a.txt"), "needle\n");
+    writeFileSync(join(head.root, "b.txt"), "needle\n");
+    // "a.txt" sorts before "a/x.txt" ("." is before "/"), though directory "a" comes first on disk.
+    assert.equal(tools(head.root)("grep", { pattern: "needle" }), "a.txt:1: needle\na/x.txt:1: needle\nb.txt:1: needle");
+  } finally {
+    head.remove();
+  }
+});
+
 test("no path leaves the head commit, through .. or a symlink", () => {
   const head = unpack(tarball());
   try {

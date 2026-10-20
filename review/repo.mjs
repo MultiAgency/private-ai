@@ -33,14 +33,21 @@ export function tools(root) {
     return real;
   }
 
-  function* walk(dir) {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.isSymbolicLink()) continue;
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (!SKIP_DIRS.has(entry.name)) yield* walk(path);
-      } else if (entry.isFile()) yield path;
-    }
+  // Every file under a directory, in the order of their paths (as the hosted
+  // App lists them), not the disk's: `grep` stops at a match limit, so the order
+  // decides which matches the model sees.
+  function walk(dir) {
+    const files = [];
+    (function visit(dir) {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isSymbolicLink()) continue;
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (!SKIP_DIRS.has(entry.name)) visit(path);
+        } else if (entry.isFile()) files.push(path);
+      }
+    })(dir);
+    return files.sort((a, b) => (relative(dir, a) < relative(dir, b) ? -1 : 1));
   }
 
   function text(path) {
