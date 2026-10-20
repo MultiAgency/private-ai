@@ -347,6 +347,26 @@ signature against the attested model key. The receipt holds hashes of the
 encrypted requests and responses, not the bytes, so it carries none of the
 reviewed code.
 
+## When a review does not run
+
+If a review stops, the check run says why, in one of these fixed categories
+(the App never puts an error's text in its output, since it could name a
+repository or quote code):
+
+| Category | Meaning | What to try |
+|---|---|---|
+| `attestation` | The model's attestation failed its checks, so no code was sent. | Re-run later; nothing left the enclave. |
+| `too large` | The head commit is bigger than one run can hold. | Review a smaller change, or use the Action on your own runner. |
+| `github` | A GitHub call failed. | Check the App still has access to the repository, then re-run. |
+| `model` | A NEAR AI call failed, or a reply's signature did not check out. | Re-run. |
+| `no submission` | The model never submitted its review. | Re-run. |
+| `run cut off` | A run was killed (out of memory or time) before it answered. | Re-run; if it repeats, the change is probably near the size limit. |
+| `storage` | Sealed storage could not be read or written. | Re-run. |
+| `unknown job`, `internal` | A job id with no record, or anything else. | Re-run, and [open an issue](https://github.com/MultiAgency/private-ai/issues) if it repeats. |
+
+Reviews do not start on their own: comment `/review` on the pull request, or
+press Re-run on its check.
+
 ## This repository
 
 Private Investigator is the first service of MultiAgency's private AI: services
