@@ -28,6 +28,7 @@ jobs:
         with:
           fetch-depth: 0
       # rust-toolchain.toml pins the toolchain and the wasm32-wasip2 target.
+      - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
       - run: cargo build --release --locked --target wasm32-wasip2 --no-default-features
       # The deployed builds recorded in app/builds.json rebuild bit for bit.
