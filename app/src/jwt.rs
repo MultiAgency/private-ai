@@ -67,4 +67,65 @@ mod tests {
         VerifyingKey::<sha2::Sha256>::new(key.to_public_key()).verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &signature).unwrap();
         assert!(app_token("x", "not a key", 0).is_err());
     }
+
+    fn parts(token: &str) -> (serde_json::Value, serde_json::Value, Vec<u8>) {
+        let decode = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s).unwrap();
+        let p: Vec<&str> = token.split('.').collect();
+        assert_eq!(p.len(), 3);
+        (serde_json::from_slice(&decode(p[0])).unwrap(), serde_json::from_slice(&decode(p[1])).unwrap(), decode(p[2]))
+    }
+
+    fn test_key() -> rsa::RsaPrivateKey {
+        rsa::RsaPrivateKey::new(&mut SystemRng, 2048).unwrap()
+    }
+
+    #[test]
+    fn the_header_names_rs256_and_the_token_is_unpadded_url_safe_base64() {
+        let pem = test_key().to_pkcs1_pem(rsa::pkcs1::LineEnding::LF).unwrap();
+        let token = app_token("123456", &pem, 1_791_000_000).unwrap();
+        assert_eq!(parts(&token).0, json!({ "alg": "RS256", "typ": "JWT" }));
+        assert!(token.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')), "{token}");
+    }
+
+    #[test]
+    fn a_pkcs8_key_signs_the_same_way_as_a_pkcs1_key() {
+        use rsa::pkcs8::EncodePrivateKey;
+        let key = test_key();
+        let pem = key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+        let token = app_token("123456", &pem, 1_791_000_000).unwrap();
+        let (_, claims, signature) = parts(&token);
+        assert_eq!(claims["iss"], "123456");
+        let signing = token.rsplit_once('.').unwrap().0;
+        VerifyingKey::<sha2::Sha256>::new(key.to_public_key()).verify(signing.as_bytes(), &Signature::try_from(signature.as_slice()).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_token_is_backdated_a_minute_and_lasts_nine_more_so_it_spans_githubs_ten_at_most() {
+        let pem = test_key().to_pkcs1_pem(rsa::pkcs1::LineEnding::LF).unwrap();
+        let (_, claims, _) = parts(&app_token("x", &pem, 5_000).unwrap());
+        let (iat, exp) = (claims["iat"].as_u64().unwrap(), claims["exp"].as_u64().unwrap());
+        assert_eq!((iat, exp), (4_940, 5_540));
+        assert_eq!(exp - iat, 600);
+    }
+
+    #[test]
+    fn a_signature_does_not_verify_under_another_key_or_for_another_issuer() {
+        let (key, other) = (test_key(), test_key());
+        let pem = key.to_pkcs1_pem(rsa::pkcs1::LineEnding::LF).unwrap();
+        let token = app_token("1", &pem, 1_000).unwrap();
+        let (_, _, signature) = parts(&token);
+        let signature = Signature::try_from(signature.as_slice()).unwrap();
+        let signing = token.rsplit_once('.').unwrap().0;
+        assert!(VerifyingKey::<sha2::Sha256>::new(other.to_public_key()).verify(signing.as_bytes(), &signature).is_err());
+        let forged = signing.replacen(signing.split('.').nth(1).unwrap(), &b64(json!({ "iat": 940, "exp": 1_540, "iss": "2" }).to_string().as_bytes()), 1);
+        assert!(VerifyingKey::<sha2::Sha256>::new(key.to_public_key()).verify(forged.as_bytes(), &signature).is_err());
+    }
+
+    #[test]
+    fn an_unusable_key_is_refused_with_a_message_that_does_not_echo_it() {
+        for pem in ["", "-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----"] {
+            let error = app_token("1", pem, 1_000).unwrap_err();
+            assert_eq!(error.to_string(), "the App private key is not an RSA PEM key");
+        }
+    }
 }
