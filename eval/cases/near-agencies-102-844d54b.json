@@ -1,0 +1,12 @@
+{
+  "name": "near-agencies#102 at 844d54b: duplicate payout proposals, audit window",
+  "repo": "MultiAgency/near-agencies",
+  "pull_request": 102,
+  "base": "bc53d5a2ec2400669a833c57791a93380c811e17",
+  "head": "844d54bd968460d8767d797cc34b5a5cd60798c0",
+  "description": "near-agencies-102-844d54b.md",
+  "source": "Raised on this commit by Claude's review (comment 4179827318) and fixed in #139, which reads every page of proposals from the job's floor.",
+  "bugs": {
+    "windowGap": "Does this code review CLAIM, as a defect, that the audit reads only one page of 100 proposals starting from the job's lowest recorded proposal id (payoutFloor), so when a job's recorded proposals are far apart (more than about 75 ids) a later task's proposal or its duplicate falls outside the window and a double approval is recorded as a single payment? Saying the window is correct, or only describing it, is NO."
+  }
+}
