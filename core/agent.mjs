@@ -1,7 +1,7 @@
 // A private tool loop on NEAR AI Cloud, one signed turn at a time (turn.mjs).
 // The model works through the caller's tools and finishes by calling the
 // finish tool with arguments the caller accepts.
-import { session } from "./e2ee.mjs";
+import { plain, session } from "./e2ee.mjs";
 import { MAX_REPLY_TOKENS, signedTurn } from "./turn.mjs";
 
 // At the default effort a reasoning model can think until the server's 8k
@@ -27,7 +27,8 @@ const parse = text => {
  * the turns of a loop that ends without a submission.
  */
 export async function runAgent({ client, model, publicKey, system, prompt, tools, call, finish, maxTurns, log = () => {}, onTurn = () => {} }) {
-  const e2ee = session(publicKey);
+  // No model key means anonymous mode: plaintext turns, unsigned (turn.mjs).
+  const e2ee = publicKey ? session(publicKey) : plain();
   const definitions = [...tools, finish.tool];
   const finishName = finish.tool.function.name;
   const messages = [{ role: "system", content: system }, { role: "user", content: prompt }];

@@ -8,9 +8,11 @@ import { appendFileSync } from "node:fs";
 import { attest } from "../core/attest.mjs";
 
 /** Each check as { ok, text }; a check that fails says how to fix it. */
-export async function checkSetup({ client, gh, model, allowUnpatchedModel }) {
+export async function checkSetup({ client, gh, model, allowUnpatchedModel, anonymous = false }) {
   const results = [];
-  try {
+  if (anonymous) {
+    results.push({ ok: true, text: `Anonymous mode: \`${model}\` is not attested, and reviews state that nothing proves where the code was read.` });
+  } else try {
     const { attestation } = await attest(client, model, { allowUnpatchedModel });
     results.push({ ok: true, text: `\`${model}\` passed its attestation: TCB ${attestation.model.tcb}, GPUs attested by NVIDIA, signing key \`${attestation.model.signer.slice(0, 16)}…\`.` });
   } catch (error) {

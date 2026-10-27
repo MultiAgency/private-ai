@@ -269,6 +269,15 @@ receipt is re-checked under the policy it records. Models NEAR AI Cloud can't
 attest, such as those served through third parties, can't be chosen. The App
 uses `z-ai/glm-5.3-flash`.
 
+**Anonymous mode.** `anonymous: "true"` trades the proof for a stronger
+model: any NEAR AI Cloud model, including ones that run only at their provider,
+outside an enclave, such as `anthropic/claude-sonnet-5-5` or `openai/gpt-5.5`.
+NEAR AI Cloud relays each request from its own account, so the provider doesn't
+see whose it is. But the code goes unencrypted, the replies are unsigned, and
+there is no attestation or receipt: nothing proves where the code was read or
+whether it was kept. Every review says so. The Action only; the App always
+runs private.
+
 **Locally,** without posting:
 
 ```sh

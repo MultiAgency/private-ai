@@ -27,6 +27,7 @@
   "checker_url": "https://multiagency.github.io/private-ai/#check",
   "upgrade_url": "https://multiagency.github.io/private-ai/#upgrade",
   "proof_line": "Read only inside an attested NEAR AI enclave, end-to-end encrypted, with every reply signed by it. [Check the receipt]({checker}).",
+  "anonymous_note": "Anonymous mode: `{model}` ran at its provider, outside any enclave, unencrypted and unsigned, so nothing here proves where the code was read or whether it was kept. NEAR AI Cloud relayed each request from its own account, not this repository's.",
   "app_proof_line": "Fetched and read only inside attested enclaves (OutLayer for the code, NEAR AI for the model), end-to-end encrypted, with every step attested and every reply signed. [Check the receipt]({checker}).",
   "patch_limit": 20000,
   "prompt_limit": 300000,

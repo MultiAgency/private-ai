@@ -17,7 +17,9 @@
 // Env: NEARAI_API_KEY, GITHUB_TOKEN; optionally MODEL, RUBRIC, MAX_TURNS,
 // PASSES, VERIFY=false to skip the pass that checks findings, and
 // ALLOW_UNPATCHED_MODEL=true to accept a model whose platform update
-// is pending (stated in the review and the receipt). In
+// is pending (stated in the review and the receipt). ANONYMOUS=true trades
+// all of that for a stronger model: no enclave, no encryption, no signatures,
+// no receipt, which the review states. In
 // GitHub Actions a `/review` comment starts a run only for someone who can write
 // to the repository (see gate.mjs).
 // It logs counts and hashes only: never code, prompts or the model's output.
@@ -232,7 +234,10 @@ function checkedItems(checked) {
   return items;
 }
 
-/** The review GitHub receives: inline comments on changed lines, the rest in the body. */
+/**
+ * The review GitHub receives: inline comments on changed lines, the rest in the
+ * body. Without an attestation (anonymous mode) it says what was not proven.
+ */
 export function renderReview({ review, turns, attestation, model, receiptSha256, runUrl, lines }) {
   const heading = f => `**${clean(f.pass)}, ${clean(f.severity)}: ${clean(f.title)}**`;
   // Findings the reviewer marked as its own earlier ones, still open, are
@@ -266,8 +271,9 @@ export function renderReview({ review, turns, attestation, model, receiptSha256,
     FEEDBACK,
     elsewhere.length && ["**Not on a changed line**", ...elsewhere.map(f => `- \`${clean(f.path)}:${f.line}\` ${heading(f)} ${clean(f.body)}`)].join("\n"),
     checked.length && [`<details><summary>What was traced (${checked.length})</summary>`, "", ...checked.map(item => `- ${item}`), "", "</details>"].join("\n"),
-    spec.proof_line.replace("{checker}", () => CHECKER),
-    [
+    !attestation && `_${spec.anonymous_note.replace("{model}", () => clean(model))}_`,
+    attestation && spec.proof_line.replace("{checker}", () => CHECKER),
+    attestation && [
       "<details><summary>What was verified</summary>",
       "",
       ...provenClaims({ model, attestation, turns: turns.length }).map(([claim, text]) => `- **${claim}:** ${text}`),
@@ -514,6 +520,7 @@ export async function main(args = process.argv.slice(2), environment = process.e
   const passes = Number(environment.PASSES || spec.defaults.passes);
   const allowUnpatchedModel = environment.ALLOW_UNPATCHED_MODEL === "true";
   const verify = environment.VERIFY ? environment.VERIFY !== "false" : spec.defaults.verify;
+  const anonymous = environment.ANONYMOUS === "true";
   if (!Number.isInteger(passes) || passes < 1 || passes > 5) throw new Error(`PASSES must be 1 to 5, not ${environment.PASSES}`);
   const target = resolveReviewTarget(values, environment);
   const standalone = target.kind === "commit" || target.kind === "range";
@@ -524,7 +531,7 @@ export async function main(args = process.argv.slice(2), environment = process.e
   const client = connectModel(env("NEARAI_API_KEY"));
 
   if (target.kind === "setup") {
-    if (!report(await checkSetup({ client, gh, model, allowUnpatchedModel }))) process.exitCode = 1;
+    if (!report(await checkSetup({ client, gh, model, allowUnpatchedModel, anonymous }))) process.exitCode = 1;
     return;
   }
 
@@ -566,29 +573,37 @@ export async function main(args = process.argv.slice(2), environment = process.e
     ]);
     log(`${standalone ? "commit range" : `#${number}`}: ${files.length} files changed, ${earlier.length} earlier findings; head ${pr.head.sha}`);
 
-    const { evidence, attestation } = await attestModel(client, model, { allowUnpatchedModel })
+    // Anonymous mode attests nothing: the model holds no key, and its turns go plaintext and unsigned.
+    const { evidence, attestation } = anonymous ? {} : await attestModel(client, model, { allowUnpatchedModel })
       .catch(error => { throw new Error(`attestation failed, so no code was sent: ${modelProblem(model, error)}`); });
-    log(`attested: model TCB ${attestation.model.tcb}, gateway TCB ${attestation.gateway.tcb}, signer ${attestation.model.signer}`);
+    log(anonymous
+      ? `anonymous: ${model} is not attested, and its turns are neither encrypted nor signed`
+      : `attested: model TCB ${attestation.model.tcb}, gateway TCB ${attestation.gateway.tcb}, signer ${attestation.model.signer}`);
 
     const head = unpackHead(tarball);
     let result;
     try {
       result = await runReview({
-        client, model, publicKey: attestation.model.publicKey, pr, files, rubric, root: head.root, maxTurns, earlier, passes, verify, log,
+        client, model, publicKey: attestation?.model.publicKey, pr, files, rubric, root: head.root, maxTurns, earlier, passes, verify, log,
       });
     } finally {
       head.remove();
     }
-    log(`reviewed: ${result.review.findings.length} findings (${result.review.verification}) in ${result.turns.length} signed turns`);
+    log(`reviewed: ${result.review.findings.length} findings (${result.review.verification}) in ${result.turns.length} ${anonymous ? "" : "signed "}turns`);
 
-    const { text, sha256: receiptSha256 } = receipt({
-      subject: { ...(standalone ? { repository: repo } : { pull_request: `${repo}#${number}` }), base_sha: pr.base.sha, head_sha: pr.head.sha },
-      model,
-      evidence,
-      turns: result.turns,
-    });
-    writeFileSync(receiptPath, text);
-    log(`receipt: ${receiptPath} sha256 ${receiptSha256}`);
+    // An anonymous run has nothing to prove, so it writes no receipt.
+    let receiptSha256;
+    if (!anonymous) {
+      const written = receipt({
+        subject: { ...(standalone ? { repository: repo } : { pull_request: `${repo}#${number}` }), base_sha: pr.base.sha, head_sha: pr.head.sha },
+        model,
+        evidence,
+        turns: result.turns,
+      });
+      writeFileSync(receiptPath, written.text);
+      receiptSha256 = written.sha256;
+      log(`receipt: ${receiptPath} sha256 ${receiptSha256}`);
+    }
 
     const posted = renderReview({ review: result.review, turns: result.turns, attestation, model, receiptSha256, runUrl, lines: newLines(files) });
     const output = standalone ? commitCheck(pr, posted, runUrl) : posted;

@@ -67,3 +67,26 @@ test("a reply cut off at the cap is dropped, and the model is asked to be briefe
   assert.deepEqual(calls, []);
   assert.match(client.seen[1].messages.at(-1).content, /was cut off/);
 });
+
+test("anonymous mode: a plaintext loop with no key, whose turns are unsigned", async () => {
+  const seen = [];
+  const client = {
+    async chat(headers, body) {
+      assert.deepEqual(headers, {});
+      seen.push(body);
+      const id = `chat-${seen.length}`;
+      const events = seen.length === 1
+        ? [{ id, choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "lookup", arguments: "{\"key\":\"a\"}" } }] }, finish_reason: "tool_calls" }] }]
+        : [{ id, choices: [{ delta: { tool_calls: [{ index: 0, id: "c2", type: "function", function: { name: "submit", arguments: "{\"answer\":\"done\"}" } }] }, finish_reason: "tool_calls" }] }];
+      return { request: Buffer.from(JSON.stringify(body)), response: Buffer.from(JSON.stringify(events)), events };
+    },
+    signature: async () => assert.fail("an anonymous turn has no signature to fetch"),
+  };
+  const { result, turns } = await run(client, { publicKey: undefined, prompt: `data with ${SECRET}` });
+  assert.deepEqual(result, { answer: "done" });
+  assert.equal(seen[0].messages[1].content, `data with ${SECRET}`);
+  assert.equal(seen[0].tools[0].function.name, "lookup");
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0].signature, undefined);
+  assert.match(turns[0].request_sha256, /^[0-9a-f]{64}$/);
+});
