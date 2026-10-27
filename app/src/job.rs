@@ -153,6 +153,10 @@ pub struct Settings {
     /// A second pass checks the new findings against the code and removes those it disproves.
     pub verify: bool,
     pub allow_unpatched_model: bool,
+    /// Review anonymously whatever the repository says, with `model` (the
+    /// author's own requests and rehearsals). Otherwise a repository opts in
+    /// through its opt-in file (`opt_in`).
+    pub anonymous: bool,
     /// Review without writing to GitHub: no check run, no posted review.
     pub dry: bool,
     /// Who opened the job (the caller OutLayer names); only they may step it.
@@ -313,6 +317,9 @@ struct Job {
     #[serde(default)]
     verify: bool,
     allow_unpatched_model: bool,
+    /// No attestation, encryption, signatures or receipt: the repository opted in.
+    #[serde(default)]
+    anonymous: bool,
     dry: bool,
     caller: String,
     salt: String,
@@ -337,9 +344,10 @@ struct Passes {
     lines: NewLines,
     agents: Vec<Value>,
     results: Vec<Option<Value>>,
-    evidence: Evidence,
-    gateway: Summary,
-    model: Summary,
+    /// The attestation; none for an anonymous review, whose key is empty.
+    evidence: Option<Evidence>,
+    gateway: Option<Summary>,
+    model: Option<Summary>,
     public_key: String,
     /// The verify pass's loop, once set up.
     #[serde(default)]
@@ -456,7 +464,10 @@ pub fn start(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, ins
     } else {
         None
     };
-    let check = if settings.dry { None } else { Some(forge.check_run(None, &json!({ "name": spec()["name"], "head_sha": head, "status": "queued", "output": { "title": "On the case", "summary": with_free_left("Queued for a private review.", &free_left) } }))?) };
+    let anonymous = settings.anonymous || opted_in(forge, pr["base"]["sha"].as_str().unwrap_or(""))?;
+    let model = if anonymous && !settings.anonymous { crate::review::defaults().anonymous_model } else { settings.model.clone() };
+    let queued = if anonymous { "Queued for an anonymous review." } else { "Queued for a private review." };
+    let check = if settings.dry { None } else { Some(forge.check_run(None, &json!({ "name": spec()["name"], "head_sha": head, "status": "queued", "output": { "title": "On the case", "summary": with_free_left(queued, &free_left) } }))?) };
     let step = Step::plain(Outcome::More);
     let mut state = Job {
         installation,
@@ -464,11 +475,12 @@ pub fn start(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, ins
         number,
         pr,
         check_run: check,
-        model: settings.model.clone(),
+        model,
         passes: settings.passes,
         max_turns: settings.max_turns,
         verify: settings.verify,
         allow_unpatched_model: settings.allow_unpatched_model,
+        anonymous,
         dry: settings.dry,
         caller: settings.caller.clone(),
         salt: hex::encode(run.salt()),
@@ -482,6 +494,14 @@ pub fn start(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, ins
     state.save(store, job)?;
     store.set(&marker, json!({ "job": job, "at": run.now().0 }).to_string().as_bytes())?;
     Ok((job.to_string(), step))
+}
+
+/// Whether the repository opted in to anonymous reviews: its opt-in file on
+/// the base commit, never the head, so a pull request can't opt itself in.
+/// Anything but `"anonymous": true` there keeps reviews private.
+fn opted_in(forge: &dyn Forge, base: &str) -> Result<bool> {
+    let path = spec()["opt_in_file"].as_str().unwrap_or("");
+    Ok(forge.text(path, base)?.and_then(|t| serde_json::from_str::<Value>(&t).ok()).is_some_and(|c| c["anonymous"] == true))
 }
 
 /// The earlier inline findings of this reviewer on the pull request.
@@ -552,24 +572,32 @@ fn gather(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &dyn Run
     }
     let rubric = if rubric.is_empty() { spec()["default_rubric"].as_str().unwrap_or("").to_string() } else { rubric.join("\n\n") };
     let earlier = earlier_findings(forge, state.number)?;
-    let (evidence, attestation) = model.attest(&state.model, state.allow_unpatched_model).mark(Failure::Attestation)?;
+    // An anonymous review attests nothing: its model holds no key.
+    let attested = if state.anonymous { None } else { Some(model.attest(&state.model, state.allow_unpatched_model).mark(Failure::Attestation)?) };
     let agents: Vec<Value> = (0..state.passes)
         .map(|_| Agent::new(&system_prompt(&rubric), &user_prompt(&state.pr, &files, &earlier), state.max_turns).with_reply_cap(HOSTED_REPLY_CAP).to_json())
         .collect();
     if let Some(check) = state.check_run {
-        forge.check_run(Some(check), &json!({ "status": "in_progress", "output": { "title": "Following leads", "summary": "Reviewing inside an attested enclave." } }))?;
+        let summary = if state.anonymous { "Reviewing anonymously, outside an enclave." } else { "Reviewing inside an attested enclave." };
+        forge.check_run(Some(check), &json!({ "status": "in_progress", "output": { "title": "Following leads", "summary": summary } }))?;
     }
     // The nonce this run generated binds the evidence in the receipt to this run.
     let mut step = Step::plain(Outcome::More);
-    step.attests.insert("nonce".into(), json!(evidence.nonce));
+    if let Some((evidence, _)) = &attested {
+        step.attests.insert("nonce".into(), json!(evidence.nonce));
+    }
+    let (evidence, gateway, summary, public_key) = match attested {
+        Some((evidence, attestation)) => (Some(evidence), Some(attestation.gateway), Some(attestation.model.summary), attestation.model.public_key),
+        None => (None, None, None, String::new()),
+    };
     state.review = Some(Passes {
         lines: new_lines(&files),
         results: vec![None; agents.len()],
         agents,
         evidence,
-        gateway: attestation.gateway,
-        model: attestation.model.summary,
-        public_key: attestation.model.public_key,
+        gateway,
+        model: summary,
+        public_key,
         verify: None,
         candidates: vec![],
         verdicts: None,
@@ -668,12 +696,19 @@ fn finish(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, state:
     let subject = json!({ "pull_request": format!("{}#{}", state.repo, state.number), "base_sha": pr["base"]["sha"], "head_sha": pr["head"]["sha"] });
     let commitment = subject_commitment(&state.salt, &subject);
     let project = run.project().unwrap_or_default();
-    let mut runs = state.runs.clone();
-    runs.push(json!({ "call_id": run.call_id() }));
-    let outlayer = json!({ "project": project, "runs": runs, "findings": tally });
-    let (secs, millis) = run.now();
-    let (text, sha) = receipt_v2(&commitment, &state.model, &passes.evidence, &all_turns, &crate::iso_time(secs, millis), &outlayer);
-    store.publish(&format!("receipt:{sha}"), text.as_bytes())?;
+    // An anonymous review has nothing to prove, so it publishes no receipt.
+    let receipt = match &passes.evidence {
+        Some(evidence) if !state.anonymous => {
+            let mut runs = state.runs.clone();
+            runs.push(json!({ "call_id": run.call_id() }));
+            let outlayer = json!({ "project": project, "runs": runs, "findings": tally });
+            let (secs, millis) = run.now();
+            let (text, sha) = receipt_v2(&commitment, &state.model, evidence, &all_turns, &crate::iso_time(secs, millis), &outlayer);
+            store.publish(&format!("receipt:{sha}"), text.as_bytes())?;
+            Some(sha)
+        }
+        _ => None,
+    };
 
     // The last run attests every turn no recorded run did: its own, and any
     // taken by a run that was cut off before it could answer (a turn saved,
@@ -698,8 +733,12 @@ fn finish(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, state:
         .map(Value::String)
         .collect();
     let mut step = Step::plain(Outcome::Done);
-    step.attests.insert("receipt_sha256".into(), json!(sha));
-    step.attests.insert("subject_sha256".into(), json!(commitment));
+    if let Some(sha) = &receipt {
+        step.attests.insert("receipt_sha256".into(), json!(sha));
+        step.attests.insert("subject_sha256".into(), json!(commitment));
+    } else {
+        step.attests.insert("anonymous".into(), json!(true));
+    }
     step.attests.insert("turns".into(), Value::Array(rest));
     step.attests.insert("findings".into(), json!(tally));
     if state.dry {
@@ -707,20 +746,28 @@ fn finish(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, state:
         return Ok(step);
     }
 
-    let mut proof = vec![(
-        "Reader".to_string(),
-        "Fetched from GitHub and read only by Private Investigator's published build, in attested OutLayer enclaves. The receipt lists every run's attestation, which names the exact build.".to_string(),
-    )];
-    proof.extend(proven_claims(&state.model, &passes.model, &passes.gateway, all_turns.len()));
-    let link = check_link(&project, &sha, &state.salt, &subject);
-    let posted = render_review(&review, &proof, &sha, None, Some(&link), &passes.lines);
+    let (posted, summary) = match (&receipt, &passes.model, &passes.gateway) {
+        (Some(sha), Some(model), Some(gateway)) => {
+            let mut proof = vec![(
+                "Reader".to_string(),
+                "Fetched from GitHub and read only by Private Investigator's published build, in attested OutLayer enclaves. The receipt lists every run's attestation, which names the exact build.".to_string(),
+            )];
+            proof.extend(proven_claims(&state.model, model, gateway, all_turns.len()));
+            let link = check_link(&project, sha, &state.salt, &subject);
+            (render_review(&review, &proof, sha, None, Some(&link), &passes.lines, None), format!("Receipt sha256 `{sha}`: [check it]({link})."))
+        }
+        _ => (
+            render_review(&review, &[], "", None, None, &passes.lines, Some(&state.model)),
+            "Anonymous review, as this repository opted in: no enclave, no receipt.".to_string(),
+        ),
+    };
     // The check run closes first and the review is the last write: if posting
     // fails, the job fails (and says so on the check run) with no review out,
     // so a retried request reviews again; once posted, nothing is left to fail.
     let still_open = review["findings"].as_array().map_or(0, Vec::len) - tally;
     forge.check_run(state.check_run, &json!({
         "status": "completed", "conclusion": "neutral",
-        "output": { "title": case_closed(tally, still_open), "summary": with_free_left(&format!("Receipt sha256 `{sha}`: [check it]({link})."), &state.free_left) },
+        "output": { "title": case_closed(tally, still_open), "summary": with_free_left(&summary, &state.free_left) },
     }))?;
     forge.review(state.number, &json!({ "commit_id": pr["head"]["sha"], "event": "COMMENT", "body": posted["body"], "comments": posted["comments"] }))?;
     let _ = remove(store, &key(job));

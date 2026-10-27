@@ -19,6 +19,8 @@ pub struct Defaults {
     pub rubric: Vec<String>,
     /// Whether a second pass checks the findings against the code.
     pub verify: bool,
+    /// The model of a repository that opted in to anonymous reviews.
+    pub anonymous_model: String,
 }
 
 pub fn defaults() -> Defaults {
@@ -29,6 +31,7 @@ pub fn defaults() -> Defaults {
         max_turns: d["max_turns"].as_u64().expect("review.json defaults.max_turns"),
         rubric: d["rubric"].as_array().expect("review.json defaults.rubric").iter().filter_map(|p| p.as_str().map(String::from)).collect(),
         verify: d["verify"].as_bool().expect("review.json defaults.verify"),
+        anonymous_model: d["anonymous_model"].as_str().expect("review.json defaults.anonymous_model").to_string(),
     }
 }
 
@@ -283,7 +286,9 @@ fn checked_items(checked: &[Value]) -> Vec<String> {
 /// the body, and the proof. Port of `renderReview` in review/review.mjs.
 /// `check_url` replaces the checker link in the receipt line (the hosted App's
 /// link carries the receipt's location and the subject's salt in its fragment).
-pub fn render_review(review: &Value, proof: &[(String, String)], receipt_sha256: &str, run_url: Option<&str>, check_url: Option<&str>, lines: &NewLines) -> Value {
+/// The review GitHub receives. `anonymous` names the model of an anonymous
+/// review, which has no proof or receipt and says so instead.
+pub fn render_review(review: &Value, proof: &[(String, String)], receipt_sha256: &str, run_url: Option<&str>, check_url: Option<&str>, lines: &NewLines, anonymous: Option<&str>) -> Value {
     let spec = spec();
     let text = |k: &str| spec[k].as_str().unwrap_or("").to_string();
     let field = |f: &Value, k: &str| clean(f[k].as_str().unwrap_or(""));
@@ -352,11 +357,14 @@ pub fn render_review(review: &Value, proof: &[(String, String)], receipt_sha256:
         parts.push(list.join("\n"));
     }
     // The hosted App's own proof sentence, linking its receipt; the Action's otherwise.
-    match check_url {
-        Some(link) => parts.push(text("app_proof_line").replacen("{checker}", link, 1)),
-        None => parts.push(text("proof_line").replacen("{checker}", &checker, 1)),
+    match (anonymous, check_url) {
+        (Some(model), _) => parts.push(format!("_{}_", text("anonymous_note").replacen("{model}", &clean(model), 1))),
+        (None, Some(link)) => parts.push(text("app_proof_line").replacen("{checker}", link, 1)),
+        (None, None) => parts.push(text("proof_line").replacen("{checker}", &checker, 1)),
     }
-    parts.push(details.join("\n"));
+    if anonymous.is_none() {
+        parts.push(details.join("\n"));
+    }
     let body = parts.into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n");
 
     let comments: Vec<Value> = placed

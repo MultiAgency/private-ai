@@ -10,7 +10,7 @@
 //! with GitHub's writes kept rather than sent. It prints the review it would
 //! have posted and writes the receipt. Input:
 //! `{"repo": "owner/name", "pr": N, "head": "sha"?, "base": "sha"?, "description": "..."?,
-//! "max_turns": 30?, "passes": N?, "receipt": "/out/receipt.json"?}`
+//! "max_turns": 30?, "passes": N?, "anonymous": true?, "receipt": "/out/receipt.json"?}`
 //! with NEARAI_API_KEY and GITHUB_TOKEN (and MODEL, optionally).
 
 /// What this build may reach and whose secret it reads, embedded in the wasm
@@ -60,8 +60,10 @@ fn main() -> anyhow::Result<()> {
     let model = net::NearAi::new(std::env::var("NEARAI_API_KEY").context("NEARAI_API_KEY")?);
     let store = Memory::default();
     let defaults = private_investigator::review::defaults();
+    let anonymous = input["anonymous"] == true;
     let settings = Settings {
-        model: std::env::var("MODEL").unwrap_or(defaults.model),
+        model: std::env::var("MODEL").unwrap_or(if anonymous { defaults.anonymous_model } else { defaults.model }),
+        anonymous,
         passes: input["passes"].as_u64().unwrap_or(defaults.passes).clamp(1, 5),
         max_turns: input["max_turns"].as_u64().unwrap_or(defaults.max_turns),
         verify: input["verify"].as_bool().unwrap_or(defaults.verify),
@@ -86,13 +88,21 @@ fn main() -> anyhow::Result<()> {
             Outcome::Skipped => bail!("the pull request is closed or a draft"),
         }
     }
-    let key = store.keys().into_iter().find(|k| k.starts_with("public:receipt:")).ok_or(Failure::Internal)?;
+    let posted = forge.posted.borrow().first().cloned().context("no review posted")?;
+    let new_findings = posted["comments"].as_array().map_or(0, Vec::len);
+    // An anonymous review publishes no receipt.
+    let Some(key) = store.keys().into_iter().find(|k| k.starts_with("public:receipt:")) else {
+        if !anonymous {
+            return Err(Failure::Internal.into());
+        }
+        println!("{}", serde_json::to_string_pretty(&json!({ "review": { "body": posted["body"], "comments": posted["comments"] }, "findings": new_findings, "turns": 0, "receipt_sha256": null }))?);
+        return Ok(());
+    };
     let text = String::from_utf8(store.get(&key)?.unwrap_or_default())?;
     let receipt: Value = serde_json::from_str(&text)?;
     if let Some(path) = input["receipt"].as_str() {
         std::fs::write(path, &text).context("writing the receipt")?;
     }
-    let posted = forge.posted.borrow().first().cloned().context("no review posted")?;
     println!("{}", serde_json::to_string_pretty(&json!({
         "review": { "body": posted["body"], "comments": posted["comments"] },
         "findings": receipt["outlayer"]["findings"],

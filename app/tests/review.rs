@@ -82,7 +82,7 @@ fn reviews_render_exactly_as_the_action_renders_them() {
         let model = summary(r["tcb"].as_str().unwrap(), &format!("{:0<64}", "5a02"), &format!("{:0<64}", "945b"));
         let gateway = summary("OutOfDate", "", "");
         let proof = proven_claims("z-ai/glm-5.3-flash", &model, &gateway, r["turns"].as_u64().unwrap() as usize);
-        let rendered = render_review(&r["review"], &proof, &"ab".repeat(32), r["run_url"].as_str(), None, &new_lines(c["files"].as_array().unwrap()));
+        let rendered = render_review(&r["review"], &proof, &"ab".repeat(32), r["run_url"].as_str(), None, &new_lines(c["files"].as_array().unwrap()), None);
         assert_eq!(rendered["body"], r["expected"]["body"]);
         assert_eq!(rendered["comments"], r["expected"]["comments"]);
     }

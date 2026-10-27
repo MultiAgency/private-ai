@@ -24,6 +24,8 @@ pub struct Hub {
     pub earlier: (Vec<Value>, Vec<Value>),
     /// A `/review` comment's author can't write to the repository.
     pub refuse_comments: bool,
+    /// The opt-in file, at the base commit and at the head.
+    pub opt_in: (Option<&'static str>, Option<&'static str>),
 }
 
 pub fn tarball() -> Vec<u8> {
@@ -44,8 +46,11 @@ impl Forge for Hub {
     fn files(&self, _: u64) -> Result<Vec<Value>> {
         Ok(vec![json!({ "filename": "lib/pay.mjs", "status": "modified", "additions": 1, "deletions": 1, "patch": "@@ -1,1 +1,1 @@\n-export const pay = total => total > 0 && send(total);\n+export const pay = total => total >= 0 && send(total);" })])
     }
-    fn text(&self, _: &str, _: &str) -> Result<Option<String>> {
-        Ok(None)
+    fn text(&self, path: &str, git_ref: &str) -> Result<Option<String>> {
+        if path != ".github/private-investigator.json" {
+            return Ok(None);
+        }
+        Ok(if git_ref == "a".repeat(40) { self.opt_in.0 } else { self.opt_in.1 }.map(String::from))
     }
     fn tarball(&self, _: &str) -> Result<Vec<u8>> {
         if self.die_on_tarball.get() > 0 {
@@ -157,7 +162,7 @@ pub fn at_now(secs: u64) -> At {
 }
 
 pub fn settings(passes: u64) -> Settings {
-    Settings { model: "z-ai/glm-5.3-flash".into(), passes, max_turns: 10, verify: false, allow_unpatched_model: false, dry: false, caller: "alice.near".into(), caps: None, trigger: None }
+    Settings { model: "z-ai/glm-5.3-flash".into(), passes, max_turns: 10, verify: false, allow_unpatched_model: false, dry: false, caller: "alice.near".into(), anonymous: false, caps: None, trigger: None }
 }
 
 pub fn model() -> Scripted {

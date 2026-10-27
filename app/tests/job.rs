@@ -462,3 +462,41 @@ fn a_run_that_ends_as_the_last_pass_finishes_hands_on_to_the_verify_pass() {
     assert_eq!(outcomes, [Outcome::More, Outcome::More, Outcome::More, Outcome::More, Outcome::Done]);
     assert_eq!(published(&store).1["turns"].as_array().unwrap().len(), 4);
 }
+
+#[test]
+fn a_repository_that_opts_in_is_reviewed_anonymously_with_no_attestation_or_receipt() {
+    // A model whose attestation fails: an anonymous review never asks for one.
+    let model = Scripted { fail_attestation: true, ..model() };
+    let (store, young) = (Memory::default(), at(0));
+    let hub = Hub { opt_in: (Some(r#"{ "anonymous": true }"#), None), ..Hub::default() };
+    let (_, opened) = start(&store, &hub, &young, "ja", 1, "o/r", 7, &settings(1)).unwrap();
+    assert_eq!(opened.outcome, Outcome::More);
+    assert_eq!(hub.checks.borrow()[0]["body"]["output"]["summary"], "Queued for an anonymous review.");
+    let gathered = run_step(&store, &hub, &model, &young, "ja");
+    assert_eq!(gathered.outcome, Outcome::More);
+    assert!(gathered.attests.get("nonce").is_none(), "nothing attested");
+    let done = run_step(&store, &hub, &model, &young, "ja");
+    assert_eq!(done.outcome, Outcome::Done);
+    assert_eq!(done.attests["anonymous"], true);
+    assert!(done.attests.get("receipt_sha256").is_none());
+    assert!(!store.keys().iter().any(|k| k.starts_with("public:receipt:")), "no receipt published");
+
+    let body = hub.reviews.borrow()[0]["body"].as_str().unwrap().to_string();
+    assert!(body.contains("Anonymous mode: `moonshotai/kimi-k3.1-pro` ran at its provider, outside any enclave"), "{body}");
+    assert!(!body.contains("What was verified") && !body.contains("&receipt="), "{body}");
+    assert_eq!(hub.reviews.borrow()[0]["comments"][0]["path"], "lib/pay.mjs");
+    let last = hub.checks.borrow().last().unwrap().clone();
+    assert!(last["body"]["output"]["summary"].as_str().unwrap().starts_with("Anonymous review"));
+}
+
+#[test]
+fn only_the_base_commit_opts_a_repository_in() {
+    for opt_in in [(None, Some(r#"{ "anonymous": true }"#)), (Some(r#"{ "anonymous": "yes" }"#), None), (Some("not json"), None)] {
+        let (store, young, model) = (Memory::default(), at(0), model());
+        let hub = Hub { opt_in, ..Hub::default() };
+        start(&store, &hub, &young, "jp", 1, "o/r", 7, &settings(1)).unwrap();
+        assert_eq!(run_step(&store, &hub, &model, &young, "jp").attests.get("nonce").is_some(), true, "{opt_in:?} attests");
+        assert_eq!(run_step(&store, &hub, &model, &young, "jp").outcome, Outcome::Done);
+        assert!(published(&store).1["version"] == 2, "{opt_in:?} publishes its receipt");
+    }
+}
