@@ -14,8 +14,9 @@ A second pair of private eyes on your pull requests. (Say the repo's name out lo
 
 When a pull request opens, a check named *Private Investigator* appears within
 seconds. A few minutes later a review lands: findings on changed lines as
-inline comments, the rest in the review body, and at the end what was verified
-and a link to the review's receipt. The [page](https://multiagency.github.io/private-ai/#sample)
+inline comments, with a one-click suggested fix when the fix is confined to the
+lines it quotes, the rest in the review body, what the reviewer traced, and at
+the end what was verified and a link to the review's receipt. The [page](https://multiagency.github.io/private-ai/#sample)
 shows a real one.
 
 ## Why it's private
@@ -158,6 +159,14 @@ caps total free usage across all installations.
 - **Who can start a review:** a `/review` comment (write access) or Re-run on
   the check, through our relay. The relay drops a `/review` from someone with
   no history in the repository; the enclave checks the rest on GitHub.
+- **Anonymous reviews, opt-in:** a repository whose default branch has
+  `.github/private-investigator.json` with `{ "anonymous": true }` is reviewed
+  by `moonshotai/kimi-k3.1-pro`, which runs at its provider outside any
+  enclave. The OutLayer side stays the same, but the model is not attested, the
+  code reaches it unencrypted, replies are unsigned and there is no receipt;
+  every such review and check says so. Only the default branch as it is now
+  counts, so a pull request can't opt itself in by its changes or by the branch
+  it targets, and deleting the file turns it off for every pull request.
 
 ### The GitHub Action (your own runner, your own key)
 
@@ -268,6 +277,15 @@ receipt is re-checked under the policy it records. Models NEAR AI Cloud can't
 attest, such as those served through third parties, can't be chosen. The App
 uses `z-ai/glm-5.3-flash`.
 
+**Anonymous mode.** `anonymous: "true"` trades the proof for a stronger
+model: any NEAR AI Cloud model, including ones that run only at their provider,
+outside an enclave, such as `anthropic/claude-sonnet-5-5` or `openai/gpt-5.5`.
+Without a `model` it uses `moonshotai/kimi-k3.1-pro`. The model is not
+attested, the code goes unencrypted, the replies are unsigned, and there is no
+receipt: nothing proves where the code was read or whether it was kept. Every
+review says so. The App offers the same as an
+opt-in per repository (above).
+
 **Locally,** without posting:
 
 ```sh
@@ -281,8 +299,22 @@ The review follows `REVIEW.md` and `AGENTS.md` from the pull request's base
 commit (`rubric:` names other files in the Action), or a default Bugs and
 Security pass when neither exists. The model reads the diff, and the head
 commit through read-only tools (list, read, search). It runs nothing, and no
-path leaves the commit. Both run the same review,
-[`review/review.json`](review/review.json).
+path leaves the commit. Lockfiles, vendored and generated files are listed but
+their diff is left out. Both run the same review,
+[`review/review.json`](review/review.json):
+
+1. **Review passes** (3 by default) trace each changed function through its
+   callers and failure paths, and report findings that each quote the code
+   they are about. Their findings are merged once each, by file and title.
+2. **A verify pass** fact-checks the new findings against the code in its own
+   signed loop. It removes only findings the code proves wrong, or that repeat
+   another; concurrency, memory-safety and compatibility findings are removed
+   only as duplicates. If it does not finish, the findings are posted, marked
+   as not double-checked. Its turns are signed and in the receipt like the
+   others. `verify: "false"` (Action) or `VERIFY=false` (CLI) skips it.
+
+Model-written text cannot open a suggestion block or a hidden HTML comment in
+what is posted.
 
 ## What a run proves
 

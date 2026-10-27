@@ -4,12 +4,13 @@
 // It runs the same reviewChange the Action runs, several times in parallel,
 // and reports how often each bug was caught. Nothing is posted.
 //
-// Usage: node eval/run.mjs [--case eval/cases/x.json] [--runs 4] [--passes 1] [--runner rust]
+// Usage: node eval/run.mjs [--case eval/cases/x.json] [--runs 4] [--passes 1] [--verify false] [--runner rust]
 // --runner rust scores the hosted App (app/) on the same case: its dry-run
 // build runs the hosted job itself, run after run, and the judge reads the
 // review it would have posted (body and inline comments). Build it with:
 //   cargo build --release --target wasm32-wasip2 --no-default-features --target-dir target/dry
-// Env: NEARAI_API_KEY, GITHUB_TOKEN.
+// Env: NEARAI_API_KEY, GITHUB_TOKEN; ANONYMOUS=true reviews with MODEL in
+// anonymous mode, while the judge stays on the attested default model.
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -28,6 +29,7 @@ const { values } = parseArgs({
     case: { type: "string", default: "eval/cases/near-agencies-94.json" },
     runs: { type: "string", default: "4" },
     passes: { type: "string", default: "1" },
+    verify: { type: "string", default: String(review.defaults.verify) },
     runner: { type: "string", default: "node" },
   },
 });
@@ -35,6 +37,8 @@ const casePath = resolve(values.case);
 const spec = JSON.parse(readFileSync(casePath, "utf8"));
 const { defaults } = review;
 const model = process.env.MODEL || defaults.model;
+const anonymous = process.env.ANONYMOUS === "true";
+const judgeModel = anonymous ? defaults.model : model;
 const gh = github(process.env.GITHUB_TOKEN, spec.repo);
 const client = nearai(process.env.NEARAI_API_KEY);
 
@@ -53,13 +57,14 @@ const rubric = (await Promise.all(defaults.rubric.map(async path => {
   return text && `## ${path}\n\n${text}`;
 }))).filter(Boolean).join("\n\n");
 const tarball = await gh.tarball(spec.head);
-const { attestation } = await attest(client, model);
-const publicKey = attestation.model.publicKey;
+const { attestation } = await attest(client, judgeModel);
+const judgeKey = attestation.model.publicKey;
+const publicKey = anonymous ? undefined : judgeKey;
 
 /** One review by the App: the dry-run build under wasmtime, on the same commit and description, as the text it would post. */
 function rustReview() {
   const wasm = resolve("target/dry/wasm32-wasip2/release/private-investigator.wasm");
-  const input = JSON.stringify({ repo: spec.repo, pr: spec.pull_request, base: spec.base, head: spec.head, description: pr.body, max_turns: defaults.max_turns, passes: Number(values.passes) });
+  const input = JSON.stringify({ repo: spec.repo, pr: spec.pull_request, base: spec.base, head: spec.head, description: pr.body, max_turns: defaults.max_turns, passes: Number(values.passes), verify: values.verify === "true", anonymous });
   return new Promise((done, fail) => {
     const child = execFile("wasmtime", ["run", "-S", "http", "-S", "inherit-env=n", "--env", "NEARAI_API_KEY", "--env", "GITHUB_TOKEN", wasm],
       { maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
@@ -79,15 +84,15 @@ const runs = await Promise.all(Array.from({ length: Number(values.runs) }, async
   try {
     const { text, findings, turns } = values.runner === "rust" ? await rustReview() : await reviewChange({
       client, model, publicKey, pr, files: compare.files, rubric, root: head.root,
-      maxTurns: defaults.max_turns, passes: Number(values.passes),
+      maxTurns: defaults.max_turns, passes: Number(values.passes), verify: values.verify === "true",
     }).then(({ review, turns }) => ({
-      text: [review.summary, ...review.findings.map(f => `${f.path}:${f.line} ${f.pass}, ${f.severity}: ${f.body}`)].join("\n\n"),
+      text: [review.summary, ...review.findings.map(f => `${f.path}:${f.line} ${f.pass}, ${f.severity}: ${f.title}. ${f.body}`)].join("\n\n"),
       findings: review.findings.length,
       turns: turns.length,
     }));
-    const caught = await judge({ client, model, publicKey, bugs: { ...spec.bugs, ...spec.falsePositives }, text });
+    const caught = await judge({ client, model: judgeModel, publicKey: judgeKey, bugs: { ...spec.bugs, ...spec.falsePositives }, text });
     const seconds = Math.round((Date.now() - started) / 1000);
-    console.log(`run ${i}: ${seconds}s, ${turns} signed turns, ${findings} findings, ` +
+    console.log(`run ${i}: ${seconds}s, ${turns} ${anonymous ? "" : "signed "}turns, ${findings} findings, ` +
       Object.entries(caught).map(([id, yes]) => id in (spec.bugs ?? {}) ? `${id} ${yes ? "CAUGHT" : "missed"}` : `${id} ${yes ? "RAISED (false positive)" : "not raised"}`).join(", "));
     return { seconds, caught };
   } catch (error) {

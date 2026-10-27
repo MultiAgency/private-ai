@@ -24,6 +24,8 @@ pub struct Hub {
     pub earlier: (Vec<Value>, Vec<Value>),
     /// A `/review` comment's author can't write to the repository.
     pub refuse_comments: bool,
+    /// The opt-in file on the default branch, and on the pull request's base branch.
+    pub opt_in: (Option<&'static str>, Option<&'static str>),
 }
 
 pub fn tarball() -> Vec<u8> {
@@ -39,13 +41,21 @@ pub fn tarball() -> Vec<u8> {
 
 impl Forge for Hub {
     fn pull(&self, _: u64) -> Result<Value> {
-        Ok(json!({ "number": 7, "title": "Pay", "body": "", "state": "open", "draft": self.draft, "base": { "ref": "main", "sha": "a".repeat(40) }, "head": { "ref": "pay", "sha": "b".repeat(40) } }))
+        Ok(json!({ "number": 7, "title": "Pay", "body": "", "state": "open", "draft": self.draft, "base": { "ref": "release", "sha": "a".repeat(40), "repo": { "default_branch": "main" } }, "head": { "ref": "pay", "sha": "b".repeat(40) } }))
     }
     fn files(&self, _: u64) -> Result<Vec<Value>> {
         Ok(vec![json!({ "filename": "lib/pay.mjs", "status": "modified", "additions": 1, "deletions": 1, "patch": "@@ -1,1 +1,1 @@\n-export const pay = total => total > 0 && send(total);\n+export const pay = total => total >= 0 && send(total);" })])
     }
-    fn text(&self, _: &str, _: &str) -> Result<Option<String>> {
-        Ok(None)
+    fn text(&self, path: &str, git_ref: &str) -> Result<Option<String>> {
+        if path != ".github/private-investigator.json" {
+            return Ok(None);
+        }
+        Ok(match git_ref {
+            "main" => self.opt_in.0,
+            r if r == "a".repeat(40) || r == "release" => self.opt_in.1,
+            _ => None,
+        }
+        .map(String::from))
     }
     fn tarball(&self, _: &str) -> Result<Vec<u8>> {
         if self.die_on_tarball.get() > 0 {
@@ -77,12 +87,15 @@ impl Forge for Hub {
     }
 }
 
-/// Reads the file, then submits one finding, one turn each.
+/// Reads the file, then submits one finding, one turn each. As the verify
+/// pass, it reads the file, then keeps or drops every finding, or never submits.
 pub struct Scripted {
     pub fail_attestation: bool,
     pub die_on_turn: Cell<Option<u64>>,
     /// Its finding is one it posted before, still open.
     pub earlier: bool,
+    /// Its verdict on each finding, as the verify pass; `None` never submits.
+    pub keep: Option<bool>,
 }
 
 pub fn summary(tcb: &str) -> Summary {
@@ -107,8 +120,16 @@ impl Model for Scripted {
         } else {
             let read = agent.messages.iter().any(|m| m["role"] == "tool" && m["content"].as_str().unwrap_or("").contains(">= 0"));
             assert!(read, "the tool read the head commit");
-            let submission = json!({ "summary": "Checked the payout guard.", "findings": [{ "path": "lib/pay.mjs", "line": 1, "pass": "Bugs", "severity": "Important", "body": "Zero totals are sent.", "earlier": self.earlier }] });
-            json!({ "content": "", "tool_calls": [{ "id": "c2", "type": "function", "function": { "name": "submit_review", "arguments": submission.to_string() } }] })
+            if finish.name() == "submit_verdicts" {
+                let Some(keep) = self.keep else {
+                    return agent.apply(&json!({ "content": "Still checking." }), Some("stop"), json!({ "id": format!("chat-v{}", agent.turn + 1), "request_sha256": "", "response_sha256": "", "signature": {} }), finish, call);
+                };
+                let verdicts = json!({ "verdicts": [{ "index": 0, "keep": keep, "reason": "line 1 checks it" }] });
+                json!({ "content": "", "tool_calls": [{ "id": "v2", "type": "function", "function": { "name": "submit_verdicts", "arguments": verdicts.to_string() } }] })
+            } else {
+                let submission = json!({ "summary": "Checked the payout guard.", "checked": ["pay and its callers"], "findings": [{ "path": "lib/pay.mjs", "line": 1, "pass": "Bugs", "severity": "Important", "category": "correctness", "title": "Zero totals are sent", "body": "A zero total is paid.", "existing_code": "export const pay = total => total >= 0 && send(total);", "fix_code": "export const pay = total => total > 0 && send(total);", "earlier": self.earlier }] });
+                json!({ "content": "", "tool_calls": [{ "id": "c2", "type": "function", "function": { "name": "submit_review", "arguments": submission.to_string() } }] })
+            }
         };
         let record = json!({ "id": format!("chat-{}", agent.turn + 1), "request_sha256": "", "response_sha256": "", "signature": {} });
         agent.apply(&reply, Some("tool_calls"), record, finish, call)
@@ -146,11 +167,11 @@ pub fn at_now(secs: u64) -> At {
 }
 
 pub fn settings(passes: u64) -> Settings {
-    Settings { model: "z-ai/glm-5.3-flash".into(), passes, max_turns: 10, allow_unpatched_model: false, dry: false, caller: "alice.near".into(), caps: None, trigger: None }
+    Settings { model: "z-ai/glm-5.3-flash".into(), passes, max_turns: 10, verify: false, allow_unpatched_model: false, dry: false, caller: "alice.near".into(), anonymous: false, caps: None, trigger: None }
 }
 
 pub fn model() -> Scripted {
-    Scripted { fail_attestation: false, die_on_turn: Cell::new(None), earlier: false }
+    Scripted { fail_attestation: false, die_on_turn: Cell::new(None), earlier: false, keep: Some(true) }
 }
 
 /// The published receipt (raw text) under `public:receipt:<sha>`.

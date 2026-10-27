@@ -4,63 +4,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ed25519 } from "@noble/curves/ed25519.js";
-
 import { runAgent } from "../core/agent.mjs";
-import { open, seal } from "../core/e2ee.mjs";
-import { parseEvents } from "../core/nearai.mjs";
-import { sha256, signedText } from "../core/sign.mjs";
-
-const MODEL = "test/model";
-const SECRET = "the-private-code";
-
-function enclave(script, { tamper } = {}) {
-  const secretKey = ed25519.utils.randomSecretKey();
-  const publicKey = Buffer.from(ed25519.getPublicKey(secretKey)).toString("hex");
-  const modelX = ed25519.utils.toMontgomerySecret(secretKey);
-  const seen = [];
-  const signatures = new Map();
-
-  return {
-    publicKey,
-    seen,
-    async chat(headers, body) {
-      const request = Buffer.from(JSON.stringify(body));
-      assert.ok(!request.includes(SECRET), "plaintext reached the wire");
-      assert.equal(headers["x-encrypt-all-fields"], "true");
-      const messages = body.messages.map(m => ({ ...m, content: m.content == null ? null : open(m.content, modelX) }));
-      const toolNames = body.tools.map(t => open(t.function.name, modelX));
-      seen.push({ messages, toolNames });
-
-      // Stream the reply as NEAR AI does: every fragment encrypted on its own,
-      // content in two pieces, a tool call's name first and its arguments after.
-      const clientX = ed25519.utils.toMontgomery(Buffer.from(headers["x-client-pub-key"], "hex"));
-      const step = script[seen.length - 1];
-      const id = `chat-${seen.length}`;
-      const halves = text => [text.slice(0, Math.ceil(text.length / 2)), text.slice(Math.ceil(text.length / 2))].filter(Boolean);
-      const events = [{ id, choices: [{ delta: { role: "assistant", content: "", reasoning_content: "" } }] }];
-      for (const piece of halves(step.content ?? "")) events.push({ id, choices: [{ delta: { content: seal(piece, clientX) } }] });
-      if (step.call) {
-        events.push({ id, choices: [{ delta: { tool_calls: [{ index: 0, id: `call_${seen.length}`, type: "function", function: { name: seal(step.call[0], clientX) } }] } }] });
-        for (const piece of halves(JSON.stringify(step.call[1]))) {
-          events.push({ id, choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: seal(piece, clientX) } }] } }] });
-        }
-      }
-      events.push({ id, choices: [{ delta: {}, finish_reason: step.length ? "length" : step.call ? "tool_calls" : "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
-      const response = Buffer.from(`${events.map(e => `data: ${JSON.stringify(e)}\n\n`).join("")}data: [DONE]\n\n`);
-      const text = signedText(MODEL, sha256(tamper ? Buffer.concat([request, Buffer.from(" ")]) : request), sha256(response));
-      signatures.set(id, {
-        text,
-        signature: Buffer.from(ed25519.sign(Buffer.from(text), secretKey)).toString("hex"),
-        signing_address: publicKey,
-        signing_algo: "ed25519",
-        signature_kind: "provider_tee",
-      });
-      return { request, response, events: parseEvents(response) };
-    },
-    signature: async id => signatures.get(id),
-  };
-}
+import { enclave, MODEL, SECRET } from "./enclave.mjs";
 
 const tool = (name, properties = {}) => ({
   type: "function",
@@ -121,4 +66,27 @@ test("a reply cut off at the cap is dropped, and the model is asked to be briefe
   assert.equal(turns.length, 2);
   assert.deepEqual(calls, []);
   assert.match(client.seen[1].messages.at(-1).content, /was cut off/);
+});
+
+test("anonymous mode: a plaintext loop with no key, whose turns are unsigned", async () => {
+  const seen = [];
+  const client = {
+    async chat(headers, body) {
+      assert.deepEqual(headers, {});
+      seen.push(body);
+      const id = `chat-${seen.length}`;
+      const events = seen.length === 1
+        ? [{ id, choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "lookup", arguments: "{\"key\":\"a\"}" } }] }, finish_reason: "tool_calls" }] }]
+        : [{ id, choices: [{ delta: { tool_calls: [{ index: 0, id: "c2", type: "function", function: { name: "submit", arguments: "{\"answer\":\"done\"}" } }] }, finish_reason: "tool_calls" }] }];
+      return { request: Buffer.from(JSON.stringify(body)), response: Buffer.from(JSON.stringify(events)), events };
+    },
+    signature: async () => assert.fail("an anonymous turn has no signature to fetch"),
+  };
+  const { result, turns } = await run(client, { publicKey: undefined, prompt: `data with ${SECRET}` });
+  assert.deepEqual(result, { answer: "done" });
+  assert.equal(seen[0].messages[1].content, `data with ${SECRET}`);
+  assert.equal(seen[0].tools[0].function.name, "lookup");
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0].signature, undefined);
+  assert.match(turns[0].request_sha256, /^[0-9a-f]{64}$/);
 });

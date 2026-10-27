@@ -394,3 +394,14 @@ test('target resolution makes setup, event defaults, explicit targets, and histo
   assert.throws(() => resolveReviewTarget({}, { PR_NUMBER_DEFAULT: 'NaN' }), /positive integer/);
   assert.throws(() => resolveReviewTarget({}, {}), /PR_NUMBER is required/);
 });
+
+test('anonymous mode attests nothing, writes no receipt and says the review is unproven', async t => {
+  const w = workflow(t);
+  await w.run(['--pr', '7'], { ANONYMOUS: 'true' });
+  assert.deepEqual(w.events, ['snapshot', 'unpack', 'review', 'cleanup', 'post PR']);
+  assert.equal(w.inputs[0].publicKey, undefined);
+  assert.equal(existsSync(w.receiptPath), false);
+  const posted = w.saved.at(-1);
+  assert.match(posted.body, /Anonymous mode: `moonshotai\/kimi-k3\.1-pro` was not attested/);
+  assert.doesNotMatch(posted.body, /What was verified|Check the receipt/);
+});

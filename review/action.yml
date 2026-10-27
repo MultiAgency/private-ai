@@ -27,14 +27,26 @@ inputs:
     description: >-
       A NEAR AI Cloud model that runs in an enclave on NEAR's own fleet. The review
       stops before sending any code unless the model passes the checks; `npm run
-      models` in MultiAgency/private-ai lists the ones that pass today.
-    default: z-ai/glm-5.3-flash
+      models` in MultiAgency/private-ai lists the ones that pass today. Defaults
+      to z-ai/glm-5.3-flash, or moonshotai/kimi-k3.1-pro in anonymous mode.
   passes:
     description: >-
-      How many independent reviews to run in parallel, merged one finding per line.
+      How many independent reviews to run in parallel, their findings merged.
       Measured in eval/, 3 turned a finding caught by luck into one caught every
       run, in the same time, at about three times the NEAR AI cost (cents).
     default: "3"
+  verify:
+    description: >-
+      "true" runs a second pass that checks each new finding against the code and
+      removes those it proves wrong, or that repeat another; "false" skips it.
+    default: "true"
+  anonymous:
+    description: >-
+      "true" uses any NEAR AI Cloud model, including ones that run only at their
+      provider, outside an enclave (Kimi, Claude, GPT…). The model is not
+      attested, the code is sent unencrypted, replies are unsigned and no
+      receipt is written. Every review states this.
+    default: "false"
   allow-unpatched-model:
     description: >-
       "true" accepts a model whose Intel platform update is pending, a weaker
@@ -74,6 +86,8 @@ runs:
         MODEL: ${{ inputs.model }}
         ALLOW_UNPATCHED_MODEL: ${{ inputs.allow-unpatched-model }}
         PASSES: ${{ inputs.passes }}
+        VERIFY: ${{ inputs.verify }}
+        ANONYMOUS: ${{ inputs.anonymous }}
         REVIEW_RECEIPT_PATH: ${{ steps.review-files.outputs.receipt }}
         REVIEW_REPORT_PATH: ${{ steps.review-files.outputs.report }}
       run: node "$GITHUB_ACTION_PATH/review.mjs" --receipt "$REVIEW_RECEIPT_PATH" --review "$REVIEW_REPORT_PATH"

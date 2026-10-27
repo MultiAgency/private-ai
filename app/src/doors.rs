@@ -43,13 +43,16 @@ fn failed(job: &str, category: &str) -> Value {
     json!({ "failed": category, "job": job, "more": false })
 }
 
-/// Settings for a review the author asks for: the defaults, on the author's key.
-fn settings(caller: &str, dry: bool, passes: Option<u64>) -> Settings {
+/// Settings for a review the author asks for: the defaults, on the author's
+/// key, anonymous with its own model when asked.
+fn settings(caller: &str, dry: bool, passes: Option<u64>, anonymous: bool) -> Settings {
     let defaults = crate::review::defaults();
     Settings {
-        model: defaults.model,
+        model: if anonymous { defaults.anonymous_model } else { defaults.model },
+        anonymous,
         passes: passes.unwrap_or(defaults.passes).clamp(1, 5),
         max_turns: defaults.max_turns,
+        verify: defaults.verify,
         allow_unpatched_model: false,
         dry,
         caller: caller.to_string(),
@@ -68,7 +71,7 @@ pub fn dispatch(input: &Value, caller: &str, author: Option<&str>, host: &Host) 
         Some("review_start") => match (input["repo"].as_str(), input["pr"].as_u64()) {
             (Some(repo), Some(pr)) => {
                 let job = host.run.job_id();
-                let opened = host.github.by_name(0, repo).and_then(|forge| job::start(host.store, forge.as_ref(), host.run, &job, 0, repo, pr, &settings(caller, input["dry"] == true, input["passes"].as_u64())));
+                let opened = host.github.by_name(0, repo).and_then(|forge| job::start(host.store, forge.as_ref(), host.run, &job, 0, repo, pr, &settings(caller, input["dry"] == true, input["passes"].as_u64(), input["anonymous"] == true)));
                 answer(&job, opened)
             }
             _ => refused("bad input"),
@@ -110,7 +113,7 @@ fn event(event: &Value, caller: &str, host: &Host) -> Value {
         // App installations review on the author's NEAR AI key, within the trial.
         let owner = name.split('/').next().unwrap_or("");
         let caps = if UNCAPPED.iter().any(|u| u.eq_ignore_ascii_case(owner)) { None } else { Some(job::FREE_TIER) };
-        let settings = Settings { caps, trigger, ..settings(caller, false, None) };
+        let settings = Settings { caps, trigger, ..settings(caller, false, None, false) };
         job::start(host.store, forge.as_ref(), host.run, &job, installation, &name, pr, &settings)
     });
     answer(&job, opened)

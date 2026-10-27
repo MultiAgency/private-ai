@@ -348,12 +348,37 @@ impl NearAi {
         })
     }
 
+    /// Anonymous mode's turn: plaintext both ways and unsigned, for a model
+    /// that runs at its provider and holds no key. Its record keeps the hashes,
+    /// with nothing to check them by. Such providers reject an effort they don't
+    /// take, and report usage only when asked.
+    pub fn plain_turn(&self, model: &str, messages: &[Value], tools: &[Value], max_tokens: u64) -> Result<Turn> {
+        let mut body = json!({ "model": model, "messages": messages, "max_tokens": max_tokens, "stream_options": { "include_usage": true } });
+        if !tools.is_empty() {
+            body["tools"] = json!(tools);
+        }
+        let chat = self.chat(&[], body)?;
+        let reply = crate::e2ee::plain_stream(&chat.events)?;
+        let id = reply.id.clone().ok_or_else(|| anyhow!("reply has no id"))?;
+        Ok(Turn {
+            reply: reply.message,
+            finish_reason: reply.finish_reason,
+            usage: reply.usage,
+            record: json!({ "id": id, "request_sha256": sha256(&chat.request), "response_sha256": sha256(&chat.response) }),
+        })
+    }
+
     /// One turn of an agent: a signed, end-to-end encrypted turn under a fresh
     /// session (so no client key outlives the run), applied to its state.
+    /// Without a model key (anonymous mode), a plain turn.
     pub fn agent_turn(&self, agent: &mut Agent, model: &str, public_key: &str, tools: &[Value], finish: &Finish, call: &mut dyn FnMut(&str, &Value) -> String) -> Result<Next> {
         let mut definitions = tools.to_vec();
         definitions.push(finish.tool.clone());
-        let turn = self.signed_turn(model, public_key, &Session::new(public_key)?, &agent.messages, &definitions, REASONING_EFFORT, agent.reply_cap)?;
+        let turn = if public_key.is_empty() {
+            self.plain_turn(model, &agent.messages, &definitions, agent.reply_cap)?
+        } else {
+            self.signed_turn(model, public_key, &Session::new(public_key)?, &agent.messages, &definitions, REASONING_EFFORT, agent.reply_cap)?
+        };
         agent.apply(&turn.reply, turn.finish_reason.as_deref(), turn.record, finish, call)
     }
 }

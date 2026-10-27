@@ -1,7 +1,7 @@
 // A private tool loop on NEAR AI Cloud, one signed turn at a time (turn.mjs).
 // The model works through the caller's tools and finishes by calling the
 // finish tool with arguments the caller accepts.
-import { session } from "./e2ee.mjs";
+import { plain, session } from "./e2ee.mjs";
 import { MAX_REPLY_TOKENS, signedTurn } from "./turn.mjs";
 
 // At the default effort a reasoning model can think until the server's 8k
@@ -23,9 +23,12 @@ const parse = text => {
  * Runs the loop and returns the finish tool's arguments with one record per
  * signed turn. `finish` is { tool, check }: check(args) returns an error
  * message for the model, or nothing when the arguments are complete.
+ * `onTurn` gets each record once its signature checks out, so a caller keeps
+ * the turns of a loop that ends without a submission.
  */
-export async function runAgent({ client, model, publicKey, system, prompt, tools, call, finish, maxTurns, log = () => {} }) {
-  const e2ee = session(publicKey);
+export async function runAgent({ client, model, publicKey, system, prompt, tools, call, finish, maxTurns, log = () => {}, onTurn = () => {} }) {
+  // No model key means anonymous mode: plaintext turns, unsigned (turn.mjs).
+  const e2ee = publicKey ? session(publicKey) : plain();
   const definitions = [...tools, finish.tool];
   const finishName = finish.tool.function.name;
   const messages = [{ role: "system", content: system }, { role: "user", content: prompt }];
@@ -35,6 +38,7 @@ export async function runAgent({ client, model, publicKey, system, prompt, tools
     const started = Date.now();
     const { reply, finishReason, usage, record } = await signedTurn({ client, model, publicKey, e2ee, messages, tools: definitions, effort: REASONING_EFFORT });
     turns.push(record);
+    onTurn(record);
 
     const calls = reply.tool_calls ?? [];
     log(`turn ${turn}: ${((Date.now() - started) / 1000).toFixed(0)}s, ${usage?.prompt_tokens} in, ` +

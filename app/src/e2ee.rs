@@ -123,56 +123,67 @@ impl Session {
     }
 
     /// The reply a stream carries. Each fragment of each field is encrypted on
-    /// its own, so fragments are opened before they are joined: text fields by
-    /// concatenation, tool calls by their index.
+    /// its own, so fragments are opened before they are joined.
     pub fn decrypt_stream(&self, events: &[Value]) -> Result<StreamReply> {
-        let mut message = Map::new();
-        message.insert("role".into(), json!("assistant"));
-        message.insert("content".into(), json!(""));
-        message.insert("reasoning_content".into(), json!(""));
-        // Keyed by the stream's index, which arrives unsigned: a map, as the
-        // Action's sparse array, so no index can force a huge allocation.
-        let mut calls: std::collections::BTreeMap<u64, Value> = std::collections::BTreeMap::new();
-        let (mut finish_reason, mut usage) = (None, None);
-        for event in events {
-            if !event["usage"].is_null() {
-                usage = Some(event["usage"].clone());
-            }
-            let Some(choice) = event["choices"].get(0) else { continue };
-            if let Some(reason) = choice["finish_reason"].as_str() {
-                finish_reason = Some(reason.to_string());
-            }
-            let delta = &choice["delta"];
-            for field in TEXT_FIELDS {
-                if let Some(fragment) = delta[field].as_str().filter(|s| !s.is_empty()) {
-                    let joined = format!("{}{}", message.get(field).and_then(Value::as_str).unwrap_or(""), open(fragment, &self.client_x25519)?);
-                    message.insert(field.into(), json!(joined));
-                }
-            }
-            for part in delta["tool_calls"].as_array().into_iter().flatten() {
-                let call = calls.entry(part["index"].as_u64().unwrap_or(0)).or_insert_with(|| json!({ "id": "", "type": "function", "function": { "name": "", "arguments": "" } }));
-                if let Some(id) = part["id"].as_str().filter(|s| !s.is_empty()) {
-                    call["id"] = json!(id);
-                }
-                for key in ["name", "arguments"] {
-                    if let Some(fragment) = part["function"][key].as_str().filter(|s| !s.is_empty()) {
-                        let joined = format!("{}{}", call["function"][key].as_str().unwrap_or(""), open(fragment, &self.client_x25519)?);
-                        call["function"][key] = json!(joined);
-                    }
-                }
-            }
-        }
-        let calls: Vec<Value> = calls.into_values().collect();
-        if !calls.is_empty() {
-            message.insert("tool_calls".into(), Value::Array(calls));
-        }
-        Ok(StreamReply {
-            id: events.first().and_then(|e| e["id"].as_str()).map(String::from),
-            message: Value::Object(message),
-            finish_reason,
-            usage,
-        })
+        read_stream(events, |fragment| open(fragment, &self.client_x25519))
     }
+}
+
+/// Anonymous mode's reply: the same stream, read as plaintext, from a model
+/// NEAR AI Cloud relays to its provider rather than running in an enclave.
+pub fn plain_stream(events: &[Value]) -> Result<StreamReply> {
+    read_stream(events, |fragment| Ok(fragment.to_string()))
+}
+
+/// A streamed reply, each fragment passed through `open` before it is joined:
+/// text fields by concatenation, tool calls by their index.
+fn read_stream(events: &[Value], open: impl Fn(&str) -> Result<String>) -> Result<StreamReply> {
+    let mut message = Map::new();
+    message.insert("role".into(), json!("assistant"));
+    message.insert("content".into(), json!(""));
+    message.insert("reasoning_content".into(), json!(""));
+    // Keyed by the stream's index, which arrives unsigned: a map, as the
+    // Action's sparse array, so no index can force a huge allocation.
+    let mut calls: std::collections::BTreeMap<u64, Value> = std::collections::BTreeMap::new();
+    let (mut finish_reason, mut usage) = (None, None);
+    for event in events {
+        if !event["usage"].is_null() {
+            usage = Some(event["usage"].clone());
+        }
+        let Some(choice) = event["choices"].get(0) else { continue };
+        if let Some(reason) = choice["finish_reason"].as_str() {
+            finish_reason = Some(reason.to_string());
+        }
+        let delta = &choice["delta"];
+        for field in TEXT_FIELDS {
+            if let Some(fragment) = delta[field].as_str().filter(|s| !s.is_empty()) {
+                let joined = format!("{}{}", message.get(field).and_then(Value::as_str).unwrap_or(""), open(fragment)?);
+                message.insert(field.into(), json!(joined));
+            }
+        }
+        for part in delta["tool_calls"].as_array().into_iter().flatten() {
+            let call = calls.entry(part["index"].as_u64().unwrap_or(0)).or_insert_with(|| json!({ "id": "", "type": "function", "function": { "name": "", "arguments": "" } }));
+            if let Some(id) = part["id"].as_str().filter(|s| !s.is_empty()) {
+                call["id"] = json!(id);
+            }
+            for key in ["name", "arguments"] {
+                if let Some(fragment) = part["function"][key].as_str().filter(|s| !s.is_empty()) {
+                    let joined = format!("{}{}", call["function"][key].as_str().unwrap_or(""), open(fragment)?);
+                    call["function"][key] = json!(joined);
+                }
+            }
+        }
+    }
+    let calls: Vec<Value> = calls.into_values().collect();
+    if !calls.is_empty() {
+        message.insert("tool_calls".into(), Value::Array(calls));
+    }
+    Ok(StreamReply {
+        id: events.first().and_then(|e| e["id"].as_str()).map(String::from),
+        message: Value::Object(message),
+        finish_reason,
+        usage,
+    })
 }
 
 fn transform_call(call: &Value, transform: impl Fn(&str) -> Result<String>) -> Result<Value> {
