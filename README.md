@@ -159,13 +159,14 @@ caps total free usage across all installations.
 - **Who can start a review:** a `/review` comment (write access) or Re-run on
   the check, through our relay. The relay drops a `/review` from someone with
   no history in the repository; the enclave checks the rest on GitHub.
-- **Anonymous reviews, opt-in:** a repository that commits
-  `.github/private-investigator.json` with `{ "anonymous": true }` to its base
-  branch is reviewed by `moonshotai/kimi-k3.1-pro`, which NEAR AI Cloud relays
-  to its provider outside any enclave. The OutLayer side stays the same, but
-  the code reaches the model unencrypted, replies are unsigned and there is no
-  receipt; every such review and check says so. Only the base branch counts, so
-  a pull request can't opt itself in.
+- **Anonymous reviews, opt-in:** a repository whose default branch has
+  `.github/private-investigator.json` with `{ "anonymous": true }` is reviewed
+  by `moonshotai/kimi-k3.1-pro`, which runs at its provider outside any
+  enclave. The OutLayer side stays the same, but the model is not attested, the
+  code reaches it unencrypted, replies are unsigned and there is no receipt;
+  every such review and check says so. Only the default branch as it is now
+  counts, so a pull request can't opt itself in by its changes or by the branch
+  it targets, and deleting the file turns it off for every pull request.
 
 ### The GitHub Action (your own runner, your own key)
 
@@ -279,10 +280,10 @@ uses `z-ai/glm-5.3-flash`.
 **Anonymous mode.** `anonymous: "true"` trades the proof for a stronger
 model: any NEAR AI Cloud model, including ones that run only at their provider,
 outside an enclave, such as `anthropic/claude-sonnet-5-5` or `openai/gpt-5.5`.
-NEAR AI Cloud relays each request from its own account, so the provider doesn't
-see whose it is. But the code goes unencrypted, the replies are unsigned, and
-there is no attestation or receipt: nothing proves where the code was read or
-whether it was kept. Every review says so. The App offers the same as an
+Without a `model` it uses `moonshotai/kimi-k3.1-pro`. The model is not
+attested, the code goes unencrypted, the replies are unsigned, and there is no
+receipt: nothing proves where the code was read or whether it was kept. Every
+review says so. The App offers the same as an
 opt-in per repository (above).
 
 **Locally,** without posting:

@@ -27,8 +27,8 @@ inputs:
     description: >-
       A NEAR AI Cloud model that runs in an enclave on NEAR's own fleet. The review
       stops before sending any code unless the model passes the checks; `npm run
-      models` in MultiAgency/private-ai lists the ones that pass today.
-    default: z-ai/glm-5.3-flash
+      models` in MultiAgency/private-ai lists the ones that pass today. Defaults
+      to z-ai/glm-5.3-flash, or moonshotai/kimi-k3.1-pro in anonymous mode.
   passes:
     description: >-
       How many independent reviews to run in parallel, their findings merged.
@@ -43,9 +43,9 @@ inputs:
   anonymous:
     description: >-
       "true" uses any NEAR AI Cloud model, including ones that run only at their
-      provider, outside an enclave (Claude, GPT, Gemini…). The code is sent
-      unencrypted, replies are unsigned and no receipt is written; NEAR AI Cloud
-      relays the requests from its own account. Every review states this.
+      provider, outside an enclave (Kimi, Claude, GPT…). The model is not
+      attested, the code is sent unencrypted, replies are unsigned and no
+      receipt is written. Every review states this.
     default: "false"
   allow-unpatched-model:
     description: >-

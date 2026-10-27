@@ -514,13 +514,13 @@ export async function main(args = process.argv.slice(2), environment = process.e
   const repo = values.repo ?? env("GITHUB_REPOSITORY");
   const dryRun = values["dry-run"] ?? false;
   const receiptPath = resolve(values.receipt ?? "private-review-receipt.json");
-  const model = environment.MODEL || spec.defaults.model;
+  const anonymous = environment.ANONYMOUS === "true";
+  const model = environment.MODEL || (anonymous ? spec.defaults.anonymous_model : spec.defaults.model);
   const rubricPaths = (environment.RUBRIC || spec.defaults.rubric.join(",")).split(",").map(p => p.trim()).filter(Boolean);
   const maxTurns = Number(environment.MAX_TURNS || spec.defaults.max_turns);
   const passes = Number(environment.PASSES || spec.defaults.passes);
   const allowUnpatchedModel = environment.ALLOW_UNPATCHED_MODEL === "true";
   const verify = environment.VERIFY ? environment.VERIFY !== "false" : spec.defaults.verify;
-  const anonymous = environment.ANONYMOUS === "true";
   if (!Number.isInteger(passes) || passes < 1 || passes > 5) throw new Error(`PASSES must be 1 to 5, not ${environment.PASSES}`);
   const target = resolveReviewTarget(values, environment);
   const standalone = target.kind === "commit" || target.kind === "range";
@@ -636,7 +636,7 @@ export async function main(args = process.argv.slice(2), environment = process.e
           : "The review did not complete. Check the review runner's log before trying again.",
       },
     }).catch(() => {});
-    if (!dryRun && !standalone) await gh.comment(number, `**${NAME} stopped:** ${error.message}. No code was posted anywhere else. Re-run the job to try again; if it keeps stopping, the run's log names the step.`).catch(() => {});
+    if (!dryRun && !standalone) await gh.comment(number, `**${NAME} stopped:** ${error.message}. ${anonymous ? "In anonymous mode, code may already have reached the model's provider." : "No code was posted anywhere else."} Re-run the job to try again; if it keeps stopping, the run's log names the step.`).catch(() => {});
     throw error;
   }
 }

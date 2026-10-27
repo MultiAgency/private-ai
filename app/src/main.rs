@@ -44,7 +44,6 @@ fn main() {
 #[cfg(all(target_arch = "wasm32", not(feature = "outlayer")))]
 fn main() -> anyhow::Result<()> {
     use anyhow::{bail, Context};
-    use private_investigator::failure::Failure;
     use private_investigator::host::{Rehearsal, RunClock};
     use private_investigator::job::{self, Outcome, Settings};
     use private_investigator::store::{Memory, Store};
@@ -77,37 +76,34 @@ fn main() -> anyhow::Result<()> {
     // The hosted job itself, run after run as OutLayer runs it, with GitHub's
     // writes kept by the rehearsal: the eval measures what the App ships.
     job::start(&store, &forge, &RunClock::start(), "rehearsal", 0, repo, number, &settings)?;
+    // What the runs attested: every turn once, and the last run's count of new findings.
+    let (mut turns, mut findings) = (0, Value::Null);
     for run in 1.. {
         let started = net::now_seconds();
         let step = job::run_step(&store, &forge, &model, &RunClock::start(), "rehearsal");
         eprintln!("run {run}: {}s", net::now_seconds() - started);
+        turns += step.attests.get("turns").and_then(Value::as_array).map_or(0, Vec::len);
         match step.outcome {
             Outcome::More => continue,
-            Outcome::Done => break,
+            Outcome::Done => {
+                findings = step.attests.get("findings").cloned().unwrap_or(Value::Null);
+                break;
+            }
             Outcome::Failed(failure) => bail!("the review stopped: {failure}"),
             Outcome::Skipped => bail!("the pull request is closed or a draft"),
         }
     }
     let posted = forge.posted.borrow().first().cloned().context("no review posted")?;
-    let new_findings = posted["comments"].as_array().map_or(0, Vec::len);
-    // An anonymous review publishes no receipt.
-    let Some(key) = store.keys().into_iter().find(|k| k.starts_with("public:receipt:")) else {
-        if !anonymous {
-            return Err(Failure::Internal.into());
-        }
-        println!("{}", serde_json::to_string_pretty(&json!({ "review": { "body": posted["body"], "comments": posted["comments"] }, "findings": new_findings, "turns": 0, "receipt_sha256": null }))?);
-        return Ok(());
-    };
-    let text = String::from_utf8(store.get(&key)?.unwrap_or_default())?;
-    let receipt: Value = serde_json::from_str(&text)?;
-    if let Some(path) = input["receipt"].as_str() {
-        std::fs::write(path, &text).context("writing the receipt")?;
+    // An anonymous review (asked for, or opted in by the repository) publishes no receipt.
+    let key = store.keys().into_iter().find(|k| k.starts_with("public:receipt:"));
+    if let (Some(key), Some(path)) = (&key, input["receipt"].as_str()) {
+        std::fs::write(path, store.get(key)?.unwrap_or_default()).context("writing the receipt")?;
     }
     println!("{}", serde_json::to_string_pretty(&json!({
         "review": { "body": posted["body"], "comments": posted["comments"] },
-        "findings": receipt["outlayer"]["findings"],
-        "turns": receipt["turns"].as_array().map_or(0, Vec::len),
-        "receipt_sha256": &key["public:receipt:".len()..],
+        "findings": findings,
+        "turns": turns,
+        "receipt_sha256": key.as_deref().map(|k| &k["public:receipt:".len()..]),
     }))?);
     Ok(())
 }

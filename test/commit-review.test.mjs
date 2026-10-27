@@ -402,6 +402,6 @@ test('anonymous mode attests nothing, writes no receipt and says the review is u
   assert.equal(w.inputs[0].publicKey, undefined);
   assert.equal(existsSync(w.receiptPath), false);
   const posted = w.saved.at(-1);
-  assert.match(posted.body, /Anonymous mode: `z-ai\/glm-5\.3-flash` ran at its provider, outside any enclave/);
+  assert.match(posted.body, /Anonymous mode: `moonshotai\/kimi-k3\.1-pro` was not attested/);
   assert.doesNotMatch(posted.body, /What was verified|Check the receipt/);
 });

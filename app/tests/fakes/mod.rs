@@ -24,7 +24,7 @@ pub struct Hub {
     pub earlier: (Vec<Value>, Vec<Value>),
     /// A `/review` comment's author can't write to the repository.
     pub refuse_comments: bool,
-    /// The opt-in file, at the base commit and at the head.
+    /// The opt-in file on the default branch, and on the pull request's base branch.
     pub opt_in: (Option<&'static str>, Option<&'static str>),
 }
 
@@ -41,7 +41,7 @@ pub fn tarball() -> Vec<u8> {
 
 impl Forge for Hub {
     fn pull(&self, _: u64) -> Result<Value> {
-        Ok(json!({ "number": 7, "title": "Pay", "body": "", "state": "open", "draft": self.draft, "base": { "ref": "main", "sha": "a".repeat(40) }, "head": { "ref": "pay", "sha": "b".repeat(40) } }))
+        Ok(json!({ "number": 7, "title": "Pay", "body": "", "state": "open", "draft": self.draft, "base": { "ref": "release", "sha": "a".repeat(40), "repo": { "default_branch": "main" } }, "head": { "ref": "pay", "sha": "b".repeat(40) } }))
     }
     fn files(&self, _: u64) -> Result<Vec<Value>> {
         Ok(vec![json!({ "filename": "lib/pay.mjs", "status": "modified", "additions": 1, "deletions": 1, "patch": "@@ -1,1 +1,1 @@\n-export const pay = total => total > 0 && send(total);\n+export const pay = total => total >= 0 && send(total);" })])
@@ -50,7 +50,12 @@ impl Forge for Hub {
         if path != ".github/private-investigator.json" {
             return Ok(None);
         }
-        Ok(if git_ref == "a".repeat(40) { self.opt_in.0 } else { self.opt_in.1 }.map(String::from))
+        Ok(match git_ref {
+            "main" => self.opt_in.0,
+            r if r == "a".repeat(40) || r == "release" => self.opt_in.1,
+            _ => None,
+        }
+        .map(String::from))
     }
     fn tarball(&self, _: &str) -> Result<Vec<u8>> {
         if self.die_on_tarball.get() > 0 {

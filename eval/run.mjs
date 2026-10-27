@@ -64,7 +64,7 @@ const publicKey = anonymous ? undefined : judgeKey;
 /** One review by the App: the dry-run build under wasmtime, on the same commit and description, as the text it would post. */
 function rustReview() {
   const wasm = resolve("target/dry/wasm32-wasip2/release/private-investigator.wasm");
-  const input = JSON.stringify({ repo: spec.repo, pr: spec.pull_request, base: spec.base, head: spec.head, description: pr.body, max_turns: defaults.max_turns, passes: Number(values.passes), verify: values.verify === "true" });
+  const input = JSON.stringify({ repo: spec.repo, pr: spec.pull_request, base: spec.base, head: spec.head, description: pr.body, max_turns: defaults.max_turns, passes: Number(values.passes), verify: values.verify === "true", anonymous });
   return new Promise((done, fail) => {
     const child = execFile("wasmtime", ["run", "-S", "http", "-S", "inherit-env=n", "--env", "NEARAI_API_KEY", "--env", "GITHUB_TOKEN", wasm],
       { maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {

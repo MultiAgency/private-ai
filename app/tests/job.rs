@@ -482,7 +482,7 @@ fn a_repository_that_opts_in_is_reviewed_anonymously_with_no_attestation_or_rece
     assert!(!store.keys().iter().any(|k| k.starts_with("public:receipt:")), "no receipt published");
 
     let body = hub.reviews.borrow()[0]["body"].as_str().unwrap().to_string();
-    assert!(body.contains("Anonymous mode: `moonshotai/kimi-k3.1-pro` ran at its provider, outside any enclave"), "{body}");
+    assert!(body.contains("Anonymous mode: `moonshotai/kimi-k3.1-pro` was not attested"), "{body}");
     assert!(!body.contains("What was verified") && !body.contains("&receipt="), "{body}");
     assert_eq!(hub.reviews.borrow()[0]["comments"][0]["path"], "lib/pay.mjs");
     let last = hub.checks.borrow().last().unwrap().clone();
@@ -490,7 +490,7 @@ fn a_repository_that_opts_in_is_reviewed_anonymously_with_no_attestation_or_rece
 }
 
 #[test]
-fn only_the_base_commit_opts_a_repository_in() {
+fn only_the_default_branch_opts_a_repository_in() {
     for opt_in in [(None, Some(r#"{ "anonymous": true }"#)), (Some(r#"{ "anonymous": "yes" }"#), None), (Some("not json"), None)] {
         let (store, young, model) = (Memory::default(), at(0), model());
         let hub = Hub { opt_in, ..Hub::default() };
@@ -499,4 +499,13 @@ fn only_the_base_commit_opts_a_repository_in() {
         assert_eq!(run_step(&store, &hub, &model, &young, "jp").outcome, Outcome::Done);
         assert!(published(&store).1["version"] == 2, "{opt_in:?} publishes its receipt");
     }
+}
+
+#[test]
+fn a_forced_anonymous_request_never_stands_in_for_a_private_one() {
+    let (store, young, hub) = (Memory::default(), at(0), Hub::default());
+    let forced = Settings { anonymous: true, ..settings(1) };
+    let (anonymous_job, _) = start(&store, &hub, &young, "jf", 1, "o/r", 7, &forced).unwrap();
+    let (private_job, _) = start(&store, &hub, &young, "jg", 1, "o/r", 7, &settings(1)).unwrap();
+    assert_ne!(anonymous_job, private_job, "the private request opens its own job");
 }

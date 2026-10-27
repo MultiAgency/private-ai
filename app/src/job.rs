@@ -435,7 +435,14 @@ pub fn start(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, ins
     // One review per request: a retried or repeated delivery continues the job
     // already running, or is dropped if that job has just finished. The marker's
     // key is a hash, so storage keys name no repository.
-    let marker = format!("request:{}", crate::sign::sha256(format!("{installation}:{repo}:{number}:{head}:{}", settings.trigger.as_deref().unwrap_or("")).as_bytes()));
+    // A forced anonymous or dry request is its own request, never the same as a private one.
+    let mode = match (settings.anonymous, settings.dry) {
+        (false, false) => "",
+        (true, false) => ":anonymous",
+        (false, true) => ":dry",
+        (true, true) => ":anonymous:dry",
+    };
+    let marker = format!("request:{}", crate::sign::sha256(format!("{installation}:{repo}:{number}:{head}:{}{mode}", settings.trigger.as_deref().unwrap_or("")).as_bytes()));
     if let Some(previous) = store.get(&marker)?.and_then(|v| serde_json::from_slice::<Value>(&v).ok()) {
         let previous_job = previous["job"].as_str().unwrap_or("").to_string();
         if store.get(&key(&previous_job))?.is_some() {
@@ -464,7 +471,7 @@ pub fn start(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, ins
     } else {
         None
     };
-    let anonymous = settings.anonymous || opted_in(forge, pr["base"]["sha"].as_str().unwrap_or(""))?;
+    let anonymous = settings.anonymous || opted_in(forge, &pr)?;
     let model = if anonymous && !settings.anonymous { crate::review::defaults().anonymous_model } else { settings.model.clone() };
     let queued = if anonymous { "Queued for an anonymous review." } else { "Queued for a private review." };
     let check = if settings.dry { None } else { Some(forge.check_run(None, &json!({ "name": spec()["name"], "head_sha": head, "status": "queued", "output": { "title": "On the case", "summary": with_free_left(queued, &free_left) } }))?) };
@@ -496,12 +503,14 @@ pub fn start(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, ins
     Ok((job.to_string(), step))
 }
 
-/// Whether the repository opted in to anonymous reviews: its opt-in file on
-/// the base commit, never the head, so a pull request can't opt itself in.
-/// Anything but `"anonymous": true` there keeps reviews private.
-fn opted_in(forge: &dyn Forge, base: &str) -> Result<bool> {
+/// Whether the repository opted in to anonymous reviews: its opt-in file as
+/// the default branch has it now. Never the pull request's own branches: its
+/// head is the author's, and its base is any branch the author points it at,
+/// or one since moved on. Anything but `"anonymous": true` keeps reviews private.
+fn opted_in(forge: &dyn Forge, pr: &Value) -> Result<bool> {
+    let Some(branch) = pr["base"]["repo"]["default_branch"].as_str().filter(|b| !b.is_empty()) else { return Ok(false) };
     let path = spec()["opt_in_file"].as_str().unwrap_or("");
-    Ok(forge.text(path, base)?.and_then(|t| serde_json::from_str::<Value>(&t).ok()).is_some_and(|c| c["anonymous"] == true))
+    Ok(forge.text(path, branch)?.and_then(|t| serde_json::from_str::<Value>(&t).ok()).is_some_and(|c| c["anonymous"] == true))
 }
 
 /// The earlier inline findings of this reviewer on the pull request.
@@ -758,7 +767,7 @@ fn finish(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, state:
         }
         _ => (
             render_review(&review, &[], "", None, None, &passes.lines, Some(&state.model)),
-            "Anonymous review, as this repository opted in: no enclave, no receipt.".to_string(),
+            "Anonymous review: the model was not attested, and there is no receipt.".to_string(),
         ),
     };
     // The check run closes first and the review is the last write: if posting

@@ -338,7 +338,10 @@ test("the Action shows its readers the same defaults review.json sets", async ()
   const { default: spec } = await import("../review/review.json", { with: { type: "json" } });
   const action = readFileSync(new URL("../review/action.yml", import.meta.url), "utf8");
   const input = name => action.match(new RegExp(`^  ${name}:\\n(?:    .*\\n)*?    default: (.*)$`, "m"))?.[1].replace(/^"|"$/g, "");
-  assert.equal(input("model"), spec.defaults.model);
+  // No model default: anonymous mode picks its own, so the description names both.
+  assert.equal(input("model"), undefined);
+  const model = action.match(/^  model:\n((?:    .*\n)*)/m)[1].replace(/\s+/g, " ");
+  assert.ok(model.includes(spec.defaults.model) && model.includes(spec.defaults.anonymous_model), model);
   assert.equal(input("passes"), String(spec.defaults.passes));
   assert.equal(input("rubric"), spec.defaults.rubric.join(","));
 });
