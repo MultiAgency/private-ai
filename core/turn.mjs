@@ -18,8 +18,9 @@ export async function signedTurn({ client, model, publicKey, e2ee, messages, too
     ...e2ee.encryptRequest({ messages, tools }),
     max_tokens: MAX_REPLY_TOKENS,
     // Providers outside NEAR's fleet reject an effort they don't take (Anthropic's
-    // models do), so an anonymous turn leaves the provider's default.
-    ...(publicKey && { reasoning_effort: effort }),
+    // models do), so an anonymous turn leaves the provider's default; they also
+    // report token usage only when asked.
+    ...(publicKey ? { reasoning_effort: effort } : { stream_options: { include_usage: true } }),
   });
   const { id, message, finishReason, usage } = e2ee.decryptStream(events);
   const record = { id, request_sha256: sha256(request), response_sha256: sha256(response) };
