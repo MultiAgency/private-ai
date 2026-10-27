@@ -325,7 +325,7 @@ impl Model for Replayed {
         let reply = if k + 1 < turns.len() {
             json!({ "content": "", "tool_calls": [{ "id": format!("c{k}"), "type": "function", "function": { "name": "read_file", "arguments": "{\"path\":\"lib/pay.mjs\"}" } }] })
         } else {
-            let submission = json!({ "summary": "Checked the payout guard.", "findings": [{ "path": "lib/pay.mjs", "line": 1, "pass": "Bugs", "severity": "Important", "body": "Zero totals are sent." }] });
+            let submission = json!({ "summary": "Checked the payout guard.", "findings": [{ "path": "lib/pay.mjs", "line": 1, "pass": "Bugs", "severity": "Important", "category": "correctness", "title": "Zero totals are sent", "body": "A zero total is paid.", "existing_code": "export const pay = total => total >= 0 && send(total);" }] });
             json!({ "content": "", "tool_calls": [{ "id": format!("c{k}"), "type": "function", "function": { "name": "submit_review", "arguments": submission.to_string() } }] })
         };
         agent.apply(&reply, Some("tool_calls"), turns[k].clone(), finish, call)
@@ -395,4 +395,70 @@ fn the_check_says_nothing_to_report_only_when_nothing_is_open() {
     run_step(&store, &hub, &model, &young, "j14");
     assert_eq!(run_step(&store, &hub, &model, &young, "j14").outcome, Outcome::Done);
     assert_eq!(hub.checks.borrow().last().unwrap()["body"]["output"]["title"], "Case closed: no new leads, 1 still open");
+}
+
+/// A whole job with the verify pass on, run by young runs: the review it posted and its receipt.
+fn verified_job(model: &Scripted, id: &str) -> (Value, Value, Value) {
+    let (store, hub, young) = (Memory::default(), Hub::default(), at(0));
+    start(&store, &hub, &young, id, 1, "o/r", 7, &Settings { verify: true, ..settings(1) }).unwrap();
+    for _ in 0..10 {
+        if run_step(&store, &hub, model, &young, id).outcome != Outcome::More {
+            break;
+        }
+    }
+    let (_, receipt) = published(&store);
+    let review = hub.reviews.borrow().first().cloned().expect("a review was posted");
+    let check = hub.checks.borrow().last().unwrap().clone();
+    (review, receipt, check)
+}
+
+#[test]
+fn the_verify_pass_keeps_a_finding_it_cannot_disprove_and_its_turns_join_the_receipt() {
+    let (review, receipt, check) = verified_job(&model(), "jv1");
+    let body = review["body"].as_str().unwrap();
+    assert!(body.contains("_A second pass checked each finding against the code._"), "{body}");
+    assert!(body.contains("<details><summary>What was traced (1)</summary>\n\n- pay and its callers"), "{body}");
+    let comment = &review["comments"][0];
+    assert_eq!(comment["line"], 1);
+    assert_eq!(comment["body"], "**Bugs, Important: Zero totals are sent**\n\nA zero total is paid.\n\n```suggestion\nexport const pay = total => total > 0 && send(total);\n```");
+    assert_eq!(receipt["turns"].as_array().unwrap().len(), 4, "two turns of review, two of verify");
+    assert_eq!(check["body"]["output"]["title"], "Case closed: 1 lead");
+}
+
+#[test]
+fn a_finding_the_verify_pass_disproves_is_not_posted() {
+    let (review, receipt, check) = verified_job(&Scripted { keep: Some(false), ..model() }, "jv2");
+    let body = review["body"].as_str().unwrap();
+    assert!(body.starts_with("**Private Investigator** (no findings)"), "{body}");
+    assert!(body.contains("removed 1 finding it could disprove"), "{body}");
+    assert_eq!(review["comments"], json!([]));
+    assert_eq!(receipt["turns"].as_array().unwrap().len(), 4);
+    assert_eq!(receipt["outlayer"]["findings"], 0);
+    assert_eq!(check["body"]["output"]["title"], "Case closed: nothing to report");
+}
+
+#[test]
+fn a_verify_pass_that_never_submits_keeps_the_findings_labelled_unchecked() {
+    let (review, receipt, _) = verified_job(&Scripted { keep: None, ..model() }, "jv3");
+    let body = review["body"].as_str().unwrap();
+    assert!(body.contains("were not double-checked"), "{body}");
+    assert_eq!(review["comments"].as_array().unwrap().len(), 1);
+    assert_eq!(receipt["turns"].as_array().unwrap().len(), 2 + 10, "every verify turn taken is in the receipt");
+}
+
+#[test]
+fn only_earlier_findings_need_no_verify_pass() {
+    let (review, receipt, _) = verified_job(&Scripted { earlier: true, ..model() }, "jv4");
+    assert!(!review["body"].as_str().unwrap().contains("second pass"));
+    assert_eq!(receipt["turns"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn a_run_that_ends_as_the_last_pass_finishes_hands_on_to_the_verify_pass() {
+    let (store, hub, model, old) = (Memory::default(), Hub::default(), model(), at(100));
+    start(&store, &hub, &old, "jv5", 1, "o/r", 7, &Settings { verify: true, ..settings(1) }).unwrap();
+    // Each old run takes one turn: attest, two review turns, two verify turns, then post.
+    let outcomes: Vec<Outcome> = (0..5).map(|_| run_step(&store, &hub, &model, &old, "jv5").outcome).collect();
+    assert_eq!(outcomes, [Outcome::More, Outcome::More, Outcome::More, Outcome::More, Outcome::Done]);
+    assert_eq!(published(&store).1["turns"].as_array().unwrap().len(), 4);
 }

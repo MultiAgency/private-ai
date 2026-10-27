@@ -50,6 +50,7 @@ fn settings(caller: &str, dry: bool, passes: Option<u64>) -> Settings {
         model: defaults.model,
         passes: passes.unwrap_or(defaults.passes).clamp(1, 5),
         max_turns: defaults.max_turns,
+        verify: defaults.verify,
         allow_unpatched_model: false,
         dry,
         caller: caller.to_string(),

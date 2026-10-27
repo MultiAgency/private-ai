@@ -14,8 +14,9 @@ A second pair of private eyes on your pull requests. (Say the repo's name out lo
 
 When a pull request opens, a check named *Private Investigator* appears within
 seconds. A few minutes later a review lands: findings on changed lines as
-inline comments, the rest in the review body, and at the end what was verified
-and a link to the review's receipt. The [page](https://multiagency.github.io/private-ai/#sample)
+inline comments, with a one-click suggested fix when the fix is confined to the
+lines it quotes, the rest in the review body, what the reviewer traced, and at
+the end what was verified and a link to the review's receipt. The [page](https://multiagency.github.io/private-ai/#sample)
 shows a real one.
 
 ## Why it's private
@@ -281,8 +282,22 @@ The review follows `REVIEW.md` and `AGENTS.md` from the pull request's base
 commit (`rubric:` names other files in the Action), or a default Bugs and
 Security pass when neither exists. The model reads the diff, and the head
 commit through read-only tools (list, read, search). It runs nothing, and no
-path leaves the commit. Both run the same review,
-[`review/review.json`](review/review.json).
+path leaves the commit. Lockfiles, vendored and generated files are listed but
+their diff is left out. Both run the same review,
+[`review/review.json`](review/review.json):
+
+1. **Review passes** (3 by default) trace each changed function through its
+   callers and failure paths, and report findings that each quote the code
+   they are about. Their findings are merged once each, by file and title.
+2. **A verify pass** fact-checks the new findings against the code in its own
+   signed loop. It removes only findings the code proves wrong, or that repeat
+   another; concurrency, memory-safety and compatibility findings are removed
+   only as duplicates. If it does not finish, the findings are posted, marked
+   as not double-checked. Its turns are signed and in the receipt like the
+   others. `verify: "false"` (Action) or `VERIFY=false` (CLI) skips it.
+
+Model-written text cannot open a suggestion block or a hidden HTML comment in
+what is posted.
 
 ## What a run proves
 

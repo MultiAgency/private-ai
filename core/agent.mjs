@@ -23,8 +23,10 @@ const parse = text => {
  * Runs the loop and returns the finish tool's arguments with one record per
  * signed turn. `finish` is { tool, check }: check(args) returns an error
  * message for the model, or nothing when the arguments are complete.
+ * `onTurn` gets each record once its signature checks out, so a caller keeps
+ * the turns of a loop that ends without a submission.
  */
-export async function runAgent({ client, model, publicKey, system, prompt, tools, call, finish, maxTurns, log = () => {} }) {
+export async function runAgent({ client, model, publicKey, system, prompt, tools, call, finish, maxTurns, log = () => {}, onTurn = () => {} }) {
   const e2ee = session(publicKey);
   const definitions = [...tools, finish.tool];
   const finishName = finish.tool.function.name;
@@ -35,6 +37,7 @@ export async function runAgent({ client, model, publicKey, system, prompt, tools
     const started = Date.now();
     const { reply, finishReason, usage, record } = await signedTurn({ client, model, publicKey, e2ee, messages, tools: definitions, effort: REASONING_EFFORT });
     turns.push(record);
+    onTurn(record);
 
     const calls = reply.tool_calls ?? [];
     log(`turn ${turn}: ${((Date.now() - started) / 1000).toFixed(0)}s, ${usage?.prompt_tokens} in, ` +

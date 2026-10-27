@@ -20,7 +20,7 @@ use crate::attest::{Attestation, Summary};
 use crate::receipt::{proven_claims, receipt_v2, subject_commitment, turn_hash, Evidence};
 use crate::failure::{Failure, Mark};
 use crate::repo::Repo;
-use crate::review::{check_submission, commentable_lines, is_our_review, merge_findings, own_findings, render_review, spec, system_prompt, user_prompt};
+use crate::review::{apply_verdicts, check_submission, check_verdicts, is_our_review, merge_findings, new_lines, own_findings, render_review, spec, system_prompt, user_prompt, verify_prompt, NewLines};
 use crate::store::{put, remove, take, Store};
 
 /// The largest reply a hosted turn may take: about 150 s at measured speeds,
@@ -150,6 +150,8 @@ pub struct Settings {
     pub model: String,
     pub passes: u64,
     pub max_turns: u64,
+    /// A second pass checks the new findings against the code and removes those it disproves.
+    pub verify: bool,
     pub allow_unpatched_model: bool,
     /// Review without writing to GitHub: no check run, no posted review.
     pub dry: bool,
@@ -297,7 +299,7 @@ fn key(job: &str) -> String {
 
 /// A job as sealed storage keeps it between runs. Its phase is `review`:
 /// none before the first step has gathered and attested, then the passes, each
-/// done once it has a result.
+/// done once it has a result, then the verify pass when there is one.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Job {
     installation: u64,
@@ -308,6 +310,8 @@ struct Job {
     model: String,
     passes: u64,
     max_turns: u64,
+    #[serde(default)]
+    verify: bool,
     allow_unpatched_model: bool,
     dry: bool,
     caller: String,
@@ -325,20 +329,68 @@ struct Job {
 }
 
 /// What the first step sets up: the passes, and the attestation they rely on.
+/// Once every pass has its result, the verify pass is set up over their new
+/// findings (`candidates`), or marked skipped.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Passes {
-    commentable: Vec<String>,
+    #[serde(default)]
+    lines: NewLines,
     agents: Vec<Value>,
     results: Vec<Option<Value>>,
     evidence: Evidence,
     gateway: Summary,
     model: Summary,
     public_key: String,
+    /// The verify pass's loop, once set up.
+    #[serde(default)]
+    verify: Option<Value>,
+    /// The merged new findings it checks, numbered by position.
+    #[serde(default)]
+    candidates: Vec<Value>,
+    #[serde(default)]
+    verdicts: Option<Value>,
+    /// "verified", "unverified" (it never submitted) or "skipped"; none while it is to run.
+    #[serde(default)]
+    verification: Option<String>,
+}
+
+/// What a review step works on next.
+#[derive(Clone, Copy)]
+enum Work {
+    Pass(usize),
+    Verify,
 }
 
 impl Passes {
-    fn next(&self) -> Option<usize> {
-        self.results.iter().position(Option::is_none)
+    fn next(&self) -> Option<Work> {
+        if let Some(i) = self.results.iter().position(Option::is_none) {
+            return Some(Work::Pass(i));
+        }
+        (self.verify.is_some() && self.verification.is_none()).then_some(Work::Verify)
+    }
+
+    /// The passes' findings, merged.
+    fn merged(&self) -> Vec<Value> {
+        let lists: Vec<Value> = self.results.iter().flatten().map(|r| r["findings"].clone()).collect();
+        merge_findings(&lists, &self.lines)
+    }
+
+    /// Once the passes are done: the verify pass over their new findings, when
+    /// the job asks for one and there is something to check; skipped otherwise.
+    fn prepare_verify(&mut self, enabled: bool, max_turns: u64) {
+        if self.results.iter().any(Option::is_none) || self.verify.is_some() || self.verification.is_some() {
+            return;
+        }
+        let candidates: Vec<Value> = self.merged().into_iter().filter(|f| f["earlier"] != true).collect();
+        if !enabled || candidates.is_empty() {
+            self.verification = Some("skipped".into());
+            return;
+        }
+        // The passes' own prompt: the pull request and its diff, as they saw it.
+        let prompt = self.agents.first().and_then(|a| a["messages"][1]["content"].as_str()).unwrap_or("").to_string();
+        let system = spec()["verify_prompt"].as_str().unwrap_or("");
+        self.verify = Some(Agent::new(system, &verify_prompt(&prompt, &candidates), max_turns).with_reply_cap(HOSTED_REPLY_CAP).to_json());
+        self.candidates = candidates;
     }
 }
 
@@ -415,6 +467,7 @@ pub fn start(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, ins
         model: settings.model.clone(),
         passes: settings.passes,
         max_turns: settings.max_turns,
+        verify: settings.verify,
         allow_unpatched_model: settings.allow_unpatched_model,
         dry: settings.dry,
         caller: settings.caller.clone(),
@@ -468,11 +521,14 @@ pub fn step(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &dyn R
     state.in_flight += 1;
     state.save(store, job)?;
 
-    let passes = match state.review.take() {
+    let mut passes = match state.review.take() {
         None => return gather(store, forge, model, run, job, state),
         Some(passes) => passes,
     };
-    let (passes, taken) = if passes.next().is_some() { take_turns(store, forge, model, run, job, &mut state, passes)? } else { (passes, vec![]) };
+    passes.prepare_verify(state.verify, state.max_turns);
+    let (mut passes, taken) = if passes.next().is_some() { take_turns(store, forge, model, run, job, &mut state, passes)? } else { (passes, vec![]) };
+    // The last pass may have finished just as the run ran out of time: its verify pass is next.
+    passes.prepare_verify(state.verify, state.max_turns);
     if passes.next().is_some() {
         let mut step = Step::plain(Outcome::More);
         step.attests.insert("turns".into(), Value::Array(taken));
@@ -507,13 +563,17 @@ fn gather(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &dyn Run
     let mut step = Step::plain(Outcome::More);
     step.attests.insert("nonce".into(), json!(evidence.nonce));
     state.review = Some(Passes {
-        commentable: commentable_lines(&files),
+        lines: new_lines(&files),
         results: vec![None; agents.len()],
         agents,
         evidence,
         gateway: attestation.gateway,
         model: attestation.model.summary,
         public_key: attestation.model.public_key,
+        verify: None,
+        candidates: vec![],
+        verdicts: None,
+        verification: None,
     });
     state.answered(run, job, &step);
     state.save(store, job)?;
@@ -528,20 +588,45 @@ fn take_turns(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &dyn
     let tarball = forge.tarball(state.pr["head"]["sha"].as_str().unwrap_or(""))?;
     let tree = Repo::from_tarball(&tarball, budget)?;
     drop(tarball);
-    let submit = spec()["submit_tool"].clone();
-    let check = |args: &Value| check_submission(args);
+    let (submit, verdicts) = (spec()["submit_tool"].clone(), spec()["verify_tool"].clone());
+    let (check, check_verify) = (|args: &Value| check_submission(args), |args: &Value| check_verdicts(args));
     let finish = Finish { tool: &submit, check: &check };
+    let finish_verify = Finish { tool: &verdicts, check: &check_verify };
     let mut taken = Vec::new();
     let mut first = true;
     while first || run.elapsed() < NEW_TURN_BEFORE_SECS {
-        let Some(i) = passes.next() else { break };
-        let mut agent = Agent::from_json(&passes.agents[i])?;
+        passes.prepare_verify(state.verify, state.max_turns);
+        let Some(work) = passes.next() else { break };
+        let (slot, finish) = match work {
+            Work::Pass(i) => (&passes.agents[i], &finish),
+            Work::Verify => (passes.verify.as_ref().expect("set up"), &finish_verify),
+        };
+        let mut agent = Agent::from_json(slot)?;
         let before = agent.turns.len();
-        let next = model.turn(&mut agent, &state.model, &passes.public_key, &Repo::definitions(), &finish, &mut |name, args| tree.call(name, args))?;
+        let next = model.turn(&mut agent, &state.model, &passes.public_key, &Repo::definitions(), finish, &mut |name, args| tree.call(name, args));
         taken.extend(agent.turns[before..].iter().map(|t| json!(turn_hash(t))));
-        passes.agents[i] = agent.to_json();
-        if let Next::Finished(result) = next {
-            passes.results[i] = Some(result);
+        match work {
+            Work::Pass(i) => {
+                passes.agents[i] = agent.to_json();
+                if let Next::Finished(result) = next? {
+                    passes.results[i] = Some(result);
+                }
+            }
+            Work::Verify => {
+                passes.verify = Some(agent.to_json());
+                match next {
+                    Ok(Next::Finished(result)) => {
+                        passes.verdicts = Some(result);
+                        passes.verification = Some("verified".into());
+                    }
+                    Ok(Next::Continue) => {}
+                    // The passes' findings stand on their own signed turns: a check that never
+                    // submits, or whose model turn fails, leaves them posted, labelled unchecked.
+                    // Its signed turns stay in the receipt; a reply whose signature failed was never recorded.
+                    Err(e) if matches!(Failure::of(&e), Failure::NoSubmission | Failure::Model) => passes.verification = Some("unverified".into()),
+                    Err(e) => return Err(e),
+                }
+            }
         }
         // A turn done: this run counts again only if it dies before the next.
         state.in_flight = 1;
@@ -555,13 +640,30 @@ fn take_turns(store: &dyn Store, forge: &dyn Forge, model: &dyn Model, run: &dyn
 
 /// The last step: the receipt, then the review.
 fn finish(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, state: Job, passes: Passes) -> Result<Step> {
-    let results: Vec<Value> = passes.results.into_iter().flatten().collect();
-    let findings: Vec<Value> = results.iter().map(|r| r["findings"].clone()).collect();
-    let review = json!({ "summary": results.first().map(|r| r["summary"].clone()).unwrap_or(Value::Null), "findings": merge_findings(&findings) });
+    let merged = passes.merged();
+    let results: Vec<Value> = passes.results.iter().flatten().cloned().collect();
+    // The first pass speaks for the review, as its summary does: passes trace much the same paths.
+    let checked = results.first().map(|r| r["checked"].clone()).filter(Value::is_array).unwrap_or_else(|| json!([]));
+    let verification = passes.verification.clone().unwrap_or_else(|| "skipped".into());
+    let (findings, dropped) = match (&passes.verdicts, verification.as_str()) {
+        (Some(verdicts), "verified") => {
+            let kept = apply_verdicts(&passes.candidates, verdicts["verdicts"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+            let dropped = passes.candidates.len() - kept.len();
+            (kept.into_iter().chain(merged.into_iter().filter(|f| f["earlier"] == true)).collect(), dropped)
+        }
+        _ => (merged, 0),
+    };
+    let review = json!({
+        "summary": results.first().map(|r| r["summary"].clone()).unwrap_or(Value::Null),
+        "checked": checked,
+        "findings": findings,
+        "verification": verification,
+        "dropped": dropped,
+    });
     // New findings only: earlier ones still open are counted in the review, not here.
     let tally = review["findings"].as_array().map_or(0, |f| f.iter().filter(|f| f["earlier"] != true).count());
-    // Passes run one after another, so pass order is the order the runs took the turns in.
-    let all_turns: Vec<Value> = passes.agents.iter().flat_map(|a| a["turns"].as_array().cloned().unwrap_or_default()).collect();
+    // Passes run one after another, then the verify pass, so this is the order the runs took the turns in.
+    let all_turns: Vec<Value> = passes.agents.iter().chain(passes.verify.as_ref()).flat_map(|a| a["turns"].as_array().cloned().unwrap_or_default()).collect();
     let pr = &state.pr;
     let subject = json!({ "pull_request": format!("{}#{}", state.repo, state.number), "base_sha": pr["base"]["sha"], "head_sha": pr["head"]["sha"] });
     let commitment = subject_commitment(&state.salt, &subject);
@@ -611,7 +713,7 @@ fn finish(store: &dyn Store, forge: &dyn Forge, run: &dyn Run, job: &str, state:
     )];
     proof.extend(proven_claims(&state.model, &passes.model, &passes.gateway, all_turns.len()));
     let link = check_link(&project, &sha, &state.salt, &subject);
-    let posted = render_review(&review, &proof, &sha, None, Some(&link), &passes.commentable);
+    let posted = render_review(&review, &proof, &sha, None, Some(&link), &passes.lines);
     // The check run closes first and the review is the last write: if posting
     // fails, the job fails (and says so on the check run) with no review out,
     // so a retried request reviews again; once posted, nothing is left to fail.

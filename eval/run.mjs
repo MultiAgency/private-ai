@@ -4,7 +4,7 @@
 // It runs the same reviewChange the Action runs, several times in parallel,
 // and reports how often each bug was caught. Nothing is posted.
 //
-// Usage: node eval/run.mjs [--case eval/cases/x.json] [--runs 4] [--passes 1] [--runner rust]
+// Usage: node eval/run.mjs [--case eval/cases/x.json] [--runs 4] [--passes 1] [--verify false] [--runner rust]
 // --runner rust scores the hosted App (app/) on the same case: its dry-run
 // build runs the hosted job itself, run after run, and the judge reads the
 // review it would have posted (body and inline comments). Build it with:
@@ -28,6 +28,7 @@ const { values } = parseArgs({
     case: { type: "string", default: "eval/cases/near-agencies-94.json" },
     runs: { type: "string", default: "4" },
     passes: { type: "string", default: "1" },
+    verify: { type: "string", default: String(review.defaults.verify) },
     runner: { type: "string", default: "node" },
   },
 });
@@ -59,7 +60,7 @@ const publicKey = attestation.model.publicKey;
 /** One review by the App: the dry-run build under wasmtime, on the same commit and description, as the text it would post. */
 function rustReview() {
   const wasm = resolve("target/dry/wasm32-wasip2/release/private-investigator.wasm");
-  const input = JSON.stringify({ repo: spec.repo, pr: spec.pull_request, base: spec.base, head: spec.head, description: pr.body, max_turns: defaults.max_turns, passes: Number(values.passes) });
+  const input = JSON.stringify({ repo: spec.repo, pr: spec.pull_request, base: spec.base, head: spec.head, description: pr.body, max_turns: defaults.max_turns, passes: Number(values.passes), verify: values.verify === "true" });
   return new Promise((done, fail) => {
     const child = execFile("wasmtime", ["run", "-S", "http", "-S", "inherit-env=n", "--env", "NEARAI_API_KEY", "--env", "GITHUB_TOKEN", wasm],
       { maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
@@ -79,9 +80,9 @@ const runs = await Promise.all(Array.from({ length: Number(values.runs) }, async
   try {
     const { text, findings, turns } = values.runner === "rust" ? await rustReview() : await reviewChange({
       client, model, publicKey, pr, files: compare.files, rubric, root: head.root,
-      maxTurns: defaults.max_turns, passes: Number(values.passes),
+      maxTurns: defaults.max_turns, passes: Number(values.passes), verify: values.verify === "true",
     }).then(({ review, turns }) => ({
-      text: [review.summary, ...review.findings.map(f => `${f.path}:${f.line} ${f.pass}, ${f.severity}: ${f.body}`)].join("\n\n"),
+      text: [review.summary, ...review.findings.map(f => `${f.path}:${f.line} ${f.pass}, ${f.severity}: ${f.title}. ${f.body}`)].join("\n\n"),
       findings: review.findings.length,
       turns: turns.length,
     }));

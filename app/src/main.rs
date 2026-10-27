@@ -64,6 +64,7 @@ fn main() -> anyhow::Result<()> {
         model: std::env::var("MODEL").unwrap_or(defaults.model),
         passes: input["passes"].as_u64().unwrap_or(defaults.passes).clamp(1, 5),
         max_turns: input["max_turns"].as_u64().unwrap_or(defaults.max_turns),
+        verify: input["verify"].as_bool().unwrap_or(defaults.verify),
         allow_unpatched_model: false,
         dry: false,
         caller: String::new(),

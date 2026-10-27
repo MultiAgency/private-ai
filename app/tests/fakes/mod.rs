@@ -77,12 +77,15 @@ impl Forge for Hub {
     }
 }
 
-/// Reads the file, then submits one finding, one turn each.
+/// Reads the file, then submits one finding, one turn each. As the verify
+/// pass, it reads the file, then keeps or drops every finding, or never submits.
 pub struct Scripted {
     pub fail_attestation: bool,
     pub die_on_turn: Cell<Option<u64>>,
     /// Its finding is one it posted before, still open.
     pub earlier: bool,
+    /// Its verdict on each finding, as the verify pass; `None` never submits.
+    pub keep: Option<bool>,
 }
 
 pub fn summary(tcb: &str) -> Summary {
@@ -107,8 +110,16 @@ impl Model for Scripted {
         } else {
             let read = agent.messages.iter().any(|m| m["role"] == "tool" && m["content"].as_str().unwrap_or("").contains(">= 0"));
             assert!(read, "the tool read the head commit");
-            let submission = json!({ "summary": "Checked the payout guard.", "findings": [{ "path": "lib/pay.mjs", "line": 1, "pass": "Bugs", "severity": "Important", "body": "Zero totals are sent.", "earlier": self.earlier }] });
-            json!({ "content": "", "tool_calls": [{ "id": "c2", "type": "function", "function": { "name": "submit_review", "arguments": submission.to_string() } }] })
+            if finish.name() == "submit_verdicts" {
+                let Some(keep) = self.keep else {
+                    return agent.apply(&json!({ "content": "Still checking." }), Some("stop"), json!({ "id": format!("chat-v{}", agent.turn + 1), "request_sha256": "", "response_sha256": "", "signature": {} }), finish, call);
+                };
+                let verdicts = json!({ "verdicts": [{ "index": 0, "keep": keep, "reason": "line 1 checks it" }] });
+                json!({ "content": "", "tool_calls": [{ "id": "v2", "type": "function", "function": { "name": "submit_verdicts", "arguments": verdicts.to_string() } }] })
+            } else {
+                let submission = json!({ "summary": "Checked the payout guard.", "checked": ["pay and its callers"], "findings": [{ "path": "lib/pay.mjs", "line": 1, "pass": "Bugs", "severity": "Important", "category": "correctness", "title": "Zero totals are sent", "body": "A zero total is paid.", "existing_code": "export const pay = total => total >= 0 && send(total);", "fix_code": "export const pay = total => total > 0 && send(total);", "earlier": self.earlier }] });
+                json!({ "content": "", "tool_calls": [{ "id": "c2", "type": "function", "function": { "name": "submit_review", "arguments": submission.to_string() } }] })
+            }
         };
         let record = json!({ "id": format!("chat-{}", agent.turn + 1), "request_sha256": "", "response_sha256": "", "signature": {} });
         agent.apply(&reply, Some("tool_calls"), record, finish, call)
@@ -146,11 +157,11 @@ pub fn at_now(secs: u64) -> At {
 }
 
 pub fn settings(passes: u64) -> Settings {
-    Settings { model: "z-ai/glm-5.3-flash".into(), passes, max_turns: 10, allow_unpatched_model: false, dry: false, caller: "alice.near".into(), caps: None, trigger: None }
+    Settings { model: "z-ai/glm-5.3-flash".into(), passes, max_turns: 10, verify: false, allow_unpatched_model: false, dry: false, caller: "alice.near".into(), caps: None, trigger: None }
 }
 
 pub fn model() -> Scripted {
-    Scripted { fail_attestation: false, die_on_turn: Cell::new(None), earlier: false }
+    Scripted { fail_attestation: false, die_on_turn: Cell::new(None), earlier: false, keep: Some(true) }
 }
 
 /// The published receipt (raw text) under `public:receipt:<sha>`.
